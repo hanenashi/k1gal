@@ -80,7 +80,7 @@ import kotlin.math.abs
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
-private const val APP_VERSION = "0.2.0"
+private const val APP_VERSION = "0.2.1"
 private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
 
 private val K1DarkColors = darkColorScheme(
@@ -116,6 +116,7 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf("Connect to K-1 Wi-Fi, then scan.")
     private var busy by mutableStateOf(false)
     private var viewerIndex by mutableStateOf<Int?>(null)
+    private var viewerLoadingLabel by mutableStateOf<String?>(null)
 
     @Volatile
     private var cancelRequested = false
@@ -136,6 +137,7 @@ class MainActivity : ComponentActivity() {
                 status = status,
                 busy = busy,
                 viewerIndex = viewerIndex,
+                viewerLoadingLabel = viewerLoadingLabel,
                 onScan = { scanListOnly() },
                 onPreviewAll = { previewAll() },
                 onStop = { stopWork() },
@@ -220,6 +222,7 @@ class MainActivity : ComponentActivity() {
             viewerIndex = index
             return
         }
+        viewerLoadingLabel = "Loading ${photo.displayName()}..."
         fetchPreviewAt(index, openAfterFetch = true)
     }
 
@@ -266,6 +269,7 @@ class MainActivity : ComponentActivity() {
             } finally {
                 runOnUiThread {
                     if (cancelRequested) status = "Stopped."
+                    viewerLoadingLabel = null
                     busy = false
                 }
             }
@@ -480,6 +484,7 @@ fun K1GalApp(
     status: String,
     busy: Boolean,
     viewerIndex: Int?,
+    viewerLoadingLabel: String?,
     onScan: () -> Unit,
     onPreviewAll: () -> Unit,
     onStop: () -> Unit,
@@ -554,6 +559,7 @@ fun K1GalApp(
                             onClose = onCloseViewer,
                             onPrev = onViewerPrev,
                             onNext = onViewerNext,
+                            loadingLabel = viewerLoadingLabel,
                         )
                     }
                 }
@@ -758,6 +764,7 @@ fun Viewer(
     onClose: () -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
+    loadingLabel: String?,
 ) {
     var dragTotal = 0f
     Box(
@@ -778,16 +785,43 @@ fun Viewer(
             .clickable { onClose() },
         contentAlignment = Alignment.Center,
     ) {
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(12.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Text("Close")
+        }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(16.dp)) {
             Image(
                 painter = rememberAsyncImagePainter(photo.cacheFile),
                 contentDescription = photo.jpg,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)),
+                modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).clickable { },
             )
             Spacer(Modifier.height(10.dp))
             Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
+        }
+        loadingLabel?.let { label ->
+            Row(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color(0xdd101010), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xff98d8ff),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(label, color = Color.White)
+            }
         }
     }
 }
