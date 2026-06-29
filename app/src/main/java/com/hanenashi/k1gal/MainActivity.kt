@@ -22,6 +22,10 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,6 +61,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,8 +69,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.ContentScale
@@ -784,32 +791,49 @@ fun Viewer(
     onNext: () -> Unit,
     loadingLabel: String?,
 ) {
-    var dragTotal = 0f
-    var imageBounds by remember { mutableStateOf<Rect?>(null) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(photo.jpg) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val up = waitForUpOrCancellation()
-                    if (up != null && (up.position - down.position).getDistance() < 20f) {
-                        val bounds = imageBounds
-                        if (bounds == null || !bounds.contains(up.position)) onClose()
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            scale = 3f
+                            offset = Offset.Zero
+                        }
+                    },
+                    onTap = {
+                        if (scale <= 1f) onClose()
+                    }
+                )
+            }
+            .pointerInput(photo.jpg) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(1f, 8f)
+                    if (scale > 1f) {
+                        offset += pan
+                    } else {
+                        offset = Offset.Zero
                     }
                 }
             }
             .pointerInput(photo.jpg) {
+                var dragTotal = 0f
                 detectHorizontalDragGestures(
                     onDragStart = { dragTotal = 0f },
                     onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
                     onDragEnd = {
-                        if (abs(dragTotal) > 90f) {
+                        if (scale <= 1.1f && abs(dragTotal) > 90f) {
                             if (dragTotal < 0) onNext() else onPrev()
                         }
-                    },
+                    }
                 )
             },
         contentAlignment = Alignment.Center,
@@ -830,8 +854,8 @@ fun Viewer(
                 .padding(16.dp),
             contentAlignment = Alignment.Center,
         ) {
-            val candidateWidth = maxWidth - 32.dp
-            val maxImageHeight = maxHeight - 96.dp
+            val candidateWidth = this.maxWidth - 32.dp
+            val maxImageHeight = this.maxHeight - 96.dp
             val widthFromHeight = maxImageHeight * 1.5f
             val imageWidth = if (candidateWidth < widthFromHeight) candidateWidth else widthFromHeight
 
@@ -839,16 +863,28 @@ fun Viewer(
                 Image(
                     painter = rememberAsyncImagePainter(photo.cacheFile),
                     contentDescription = photo.jpg,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .width(imageWidth)
                         .aspectRatio(1.5f)
                         .clip(RoundedCornerShape(8.dp))
-                        .onGloballyPositioned { imageBounds = it.boundsInRoot() },
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y
+                        ),
                 )
-                Spacer(Modifier.height(10.dp))
-                Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
+                if (scale <= 1f) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "${index + 1}/$total  ${photo.displayName()}",
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
+                }
             }
         }
         loadingLabel?.let { label ->
