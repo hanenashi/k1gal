@@ -6,13 +6,13 @@ The app is designed for the "small JPEG previews on SD card" workflow:
 
 1. Connect the Pixel to the `PENTAX_...` Wi-Fi network.
 2. Scan the selected SD card.
-3. k1gal downloads JPEG previews into app cache.
-4. Browse the local cache quickly.
+3. Scan lists the camera files without downloading every preview.
+4. Tap individual cards to fetch only those JPEG previews, or use `Preview all`.
 5. Select photos and download matching RAW files to `Download/k1gal`.
 
-The initial RAW download logic tries `.PEF` and `.DNG` names derived from the
-JPEG preview name. JPEG previews stay in temporary app cache and can be cleared
-from inside the app.
+RAW downloads use the RAW filename reported by the K-1 file list. JPEG previews
+stay in temporary app cache and can be cleared from inside the app. The viewer
+supports horizontal swipes; swiping to an uncached neighbor fetches that preview.
 
 ## Build
 
