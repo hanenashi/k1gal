@@ -205,7 +205,12 @@ class MainActivity : ComponentActivity() {
     private fun openPhoto(photo: PhotoItem) {
         val index = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
         if (index < 0) return
-        openPhotoAt(index)
+        val cached = photos[index].cacheFile
+        if (cached != null && cached.exists() && cached.length() > 0L) {
+            viewerIndex = index
+            return
+        }
+        fetchPreviewAt(index, openAfterFetch = false)
     }
 
     private fun openPhotoAt(index: Int) {
@@ -215,12 +220,16 @@ class MainActivity : ComponentActivity() {
             viewerIndex = index
             return
         }
+        fetchPreviewAt(index, openAfterFetch = true)
+    }
 
+    private fun fetchPreviewAt(index: Int, openAfterFetch: Boolean) {
+        val photo = photos.getOrNull(index) ?: return
         startWork("Fetching preview: ${photo.jpg}") { ip, sd ->
             val cachedPhoto = ensurePreviewCached(ip, sd, photo)
             runOnUiThread {
                 val freshIndex = photos.indexOfFirst { it.dir == cachedPhoto.dir && it.jpg == cachedPhoto.jpg }
-                if (freshIndex >= 0 && !cancelRequested) viewerIndex = freshIndex
+                if (openAfterFetch && freshIndex >= 0 && !cancelRequested) viewerIndex = freshIndex
             }
         }
     }
