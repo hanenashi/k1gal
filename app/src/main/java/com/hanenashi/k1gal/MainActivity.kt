@@ -2,12 +2,15 @@ package com.hanenashi.k1gal
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.media.ExifInterface
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -21,8 +24,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +80,8 @@ import kotlin.math.abs
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
+private const val APP_VERSION = "0.2.0"
+private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
 
 private val K1DarkColors = darkColorScheme(
     primary = Color(0xff9f7aea),
@@ -114,6 +122,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        hideSystemNavigation()
         cameraIp = guessCameraIp()
         loadExistingCache()
         setContent {
@@ -141,8 +150,26 @@ class MainActivity : ComponentActivity() {
                 onViewerPrev = { openAdjacentPhoto(-1) },
                 onViewerNext = { openAdjacentPhoto(1) },
                 onToggleSelect = { toggleSelection(it) },
+                onOpenGithub = { openGithub() },
             )
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemNavigation()
+    }
+
+    private fun hideSystemNavigation() {
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    }
+
+    private fun openGithub() {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
     }
 
     private fun scanListOnly() {
@@ -455,60 +482,59 @@ fun K1GalApp(
     onViewerPrev: () -> Unit,
     onViewerNext: () -> Unit,
     onToggleSelect: (PhotoItem) -> Unit,
+    onOpenGithub: () -> Unit,
 ) {
+    var settingsOpen by remember { mutableStateOf(false) }
+
     MaterialTheme(colorScheme = K1DarkColors) {
         Surface(modifier = Modifier.fillMaxSize(), color = Color(0xff101010)) {
             Box {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    Header(
-                        cameraIp = cameraIp,
-                        onCameraIpChange = onCameraIpChange,
-                        sdCard = sdCard,
-                        onSdCardChange = onSdCardChange,
+                    ActionBar(
                         selectedCount = selected.size,
                         busy = busy,
                         canPreviewAll = photos.isNotEmpty(),
+                        onSettings = { settingsOpen = !settingsOpen },
                         onScan = onScan,
                         onPreviewAll = onPreviewAll,
                         onStop = onStop,
-                        onUseCameraIp = onUseCameraIp,
                         onClear = onClear,
                         onDownloadSelected = onDownloadSelected,
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xff242424))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (busy) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = Color(0xff98d8ff),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(status, color = Color(0xffeeeeee), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (settingsOpen) {
+                        SettingsPanel(
+                            cameraIp = cameraIp,
+                            onCameraIpChange = onCameraIpChange,
+                            sdCard = sdCard,
+                            onSdCardChange = onSdCardChange,
+                            busy = busy,
+                            onUseCameraIp = onUseCameraIp,
+                            onOpenGithub = onOpenGithub,
+                        )
                     }
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 118.dp),
-                        contentPadding = PaddingValues(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        items(photos, key = { "${it.dir}/${it.jpg}" }) { photo ->
-                            val isSelected = selected.any { it.dir == photo.dir && it.jpg == photo.jpg }
-                            PhotoCard(
-                                photo = photo,
-                                isSelected = isSelected,
-                                onOpen = { onOpen(photo) },
-                                onToggleSelect = { onToggleSelect(photo) },
-                            )
+                    Box(modifier = Modifier.weight(1f)) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 118.dp),
+                            contentPadding = PaddingValues(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            items(photos, key = { "${it.dir}/${it.jpg}" }) { photo ->
+                                val isSelected = selected.any { it.dir == photo.dir && it.jpg == photo.jpg }
+                                PhotoCard(
+                                    photo = photo,
+                                    isSelected = isSelected,
+                                    onOpen = { onOpen(photo) },
+                                    onToggleSelect = { onToggleSelect(photo) },
+                                )
+                            }
                         }
                     }
+                    FooterStatus(
+                        status = status,
+                        busy = busy,
+                    )
                 }
                 viewerIndex?.let { index ->
                     photos.getOrNull(index)?.let { photo ->
@@ -524,6 +550,135 @@ fun K1GalApp(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ActionBar(
+    selectedCount: Int,
+    busy: Boolean,
+    canPreviewAll: Boolean,
+    onSettings: () -> Unit,
+    onScan: () -> Unit,
+    onPreviewAll: () -> Unit,
+    onStop: () -> Unit,
+    onClear: () -> Unit,
+    onDownloadSelected: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .background(Color(0xff151515))
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CompactButton("Set", onSettings)
+        CompactButton(if (busy) "Stop" else "Scan", if (busy) onStop else onScan)
+        CompactButton("All", onPreviewAll, enabled = !busy && canPreviewAll)
+        CompactButton("RAW", onDownloadSelected, enabled = !busy && selectedCount > 0)
+        CompactButton("Clear", onClear, enabled = !busy)
+    }
+}
+
+@Composable
+fun RowScope.CompactButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .weight(1f)
+            .height(38.dp)
+            .defaultMinSize(minWidth = 1.dp, minHeight = 1.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+    ) {
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+fun SettingsPanel(
+    cameraIp: String,
+    onCameraIpChange: (String) -> Unit,
+    sdCard: String,
+    onSdCardChange: (String) -> Unit,
+    busy: Boolean,
+    onUseCameraIp: () -> Unit,
+    onOpenGithub: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xff1a1a1a))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("k1gal", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text("v$APP_VERSION", color = Color(0xffbdbdbd), style = MaterialTheme.typography.bodySmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = cameraIp,
+                onValueChange = onCameraIpChange,
+                label = { Text("K-1 IP") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = sdCard,
+                onValueChange = { if (it in listOf("1", "2", "")) onSdCardChange(it) },
+                label = { Text("SD") },
+                singleLine = true,
+                modifier = Modifier.width(72.dp),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onUseCameraIp, enabled = !busy) { Text("Use K-1 IP") }
+            OutlinedButton(onClick = onOpenGithub) { Text("GitHub") }
+        }
+        Text(
+            "TL;DR: connect to Pentax Wi-Fi, Scan to list files, tap cards for just the previews you need, swipe in viewer, select keepers, then RAW saves originals to Download/k1gal.",
+            color = Color(0xffd0d0d0),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            GITHUB_URL,
+            color = Color(0xff9f7aea),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+fun FooterStatus(
+    status: String,
+    busy: Boolean,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xff242424))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xff98d8ff),
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(status, color = Color(0xffeeeeee), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -564,11 +719,11 @@ fun PhotoCard(
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onToggleSelect() },
-                modifier = Modifier.align(Alignment.TopEnd).background(Color(0x99000000), RoundedCornerShape(bottomStart = 8.dp)),
+                modifier = Modifier.align(Alignment.TopEnd),
             )
         }
         Text(
-            text = photo.jpg,
+            text = photo.displayName(),
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -576,7 +731,7 @@ fun PhotoCard(
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            text = listOfNotNull(photo.takenAt, photo.raw?.let { "RAW" } ?: "JPG only").joinToString("  "),
+            text = photo.cardMetaText(),
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 0.dp).padding(bottom = 6.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -622,7 +777,7 @@ fun Viewer(
                 modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)),
             )
             Spacer(Modifier.height(10.dp))
-            Text("${index + 1}/$total  ${photo.jpg}", color = Color.White)
+            Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
         }
     }
@@ -702,11 +857,27 @@ private fun urlPart(value: String): String =
 private fun String.isRawName(): Boolean =
     endsWith(".PEF", ignoreCase = true) || endsWith(".DNG", ignoreCase = true) || endsWith(".RAW", ignoreCase = true)
 
+private fun PhotoItem.displayName(): String = jpg.substringBeforeLast(".")
+
+private fun PhotoItem.cardMetaText(): String = takenAt ?: if (raw != null) "RAW" else "JPG"
+
 private fun File.readTakenAt(): String? = try {
-    ExifInterface(absolutePath).getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+    formatExifDateTime(
+        ExifInterface(absolutePath).getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
         ?: ExifInterface(absolutePath).getAttribute(ExifInterface.TAG_DATETIME)
+    )
 } catch (_: Exception) {
     null
+}
+
+private fun formatExifDateTime(value: String?): String? {
+    if (value == null || value.length < 16) return value
+    val yy = value.substring(2, 4)
+    val month = value.substring(5, 7)
+    val day = value.substring(8, 10)
+    val hour = value.substring(11, 13)
+    val minute = value.substring(14, 16)
+    return "$yy/$month/$day $hour:$minute"
 }
 
 private fun JSONArray?.orEmpty(): JSONArray = this ?: JSONArray()
