@@ -18,9 +18,13 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -59,12 +63,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.rememberAsyncImagePainter
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -80,7 +89,7 @@ import kotlin.math.abs
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
-private const val APP_VERSION = "0.2.1"
+private const val APP_VERSION = "0.2.2"
 private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
 
 private val K1DarkColors = darkColorScheme(
@@ -767,60 +776,95 @@ fun Viewer(
     loadingLabel: String?,
 ) {
     var dragTotal = 0f
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xf5000000))
-            .pointerInput(photo.jpg) {
-                detectHorizontalDragGestures(
-                    onDragStart = { dragTotal = 0f },
-                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                    onDragEnd = {
-                        if (abs(dragTotal) > 90f) {
-                            if (dragTotal < 0) onNext() else onPrev()
-                        }
-                    },
-                )
-            }
-            .clickable { onClose() },
-        contentAlignment = Alignment.Center,
+    var imageBounds by remember { mutableStateOf<Rect?>(null) }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
     ) {
-        OutlinedButton(
-            onClick = onClose,
+        Box(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(12.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                .fillMaxSize()
+                .background(Color(0xf5000000))
+                .pointerInput(photo.jpg) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val up = waitForUpOrCancellation()
+                        if (up != null && (up.position - down.position).getDistance() < 20f) {
+                            val bounds = imageBounds
+                            if (bounds == null || !bounds.contains(up.position)) onClose()
+                        }
+                    }
+                }
+                .pointerInput(photo.jpg) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragTotal = 0f },
+                        onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                        onDragEnd = {
+                            if (abs(dragTotal) > 90f) {
+                                if (dragTotal < 0) onNext() else onPrev()
+                            }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
         ) {
-            Text("Close")
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(16.dp)) {
-            Image(
-                painter = rememberAsyncImagePainter(photo.cacheFile),
-                contentDescription = photo.jpg,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(8.dp)).clickable { },
-            )
-            Spacer(Modifier.height(10.dp))
-            Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
-        }
-        loadingLabel?.let { label ->
-            Row(
+            OutlinedButton(
+                onClick = onClose,
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color(0xdd101010), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = Color(0xff98d8ff),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(label, color = Color.White)
+                Text("Close")
+            }
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                val candidateWidth = maxWidth - 32.dp
+                val maxImageHeight = maxHeight - 96.dp
+                val widthFromHeight = maxImageHeight * 1.5f
+                val imageWidth = if (candidateWidth < widthFromHeight) candidateWidth else widthFromHeight
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Image(
+                        painter = rememberAsyncImagePainter(photo.cacheFile),
+                        contentDescription = photo.jpg,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .width(imageWidth)
+                            .aspectRatio(1.5f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .onGloballyPositioned { imageBounds = it.boundsInRoot() },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
+                }
+            }
+            loadingLabel?.let { label ->
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .background(Color(0xdd101010), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xff98d8ff),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, color = Color.White)
+                }
             }
         }
     }
