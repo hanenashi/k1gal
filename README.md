@@ -2,6 +2,18 @@
 
 Android gallery for the Pentax K-1 Wi-Fi API.
 
+## Nerdy TL;DR
+
+`k1gal` is a tiny native Android client for the Pentax K-1 HTTP API at
+`192.168.0.1`. It binds camera traffic to Wi-Fi, asks `/v1/photos` for the SD
+card file list, renders an empty local gallery first, and only pulls JPEG
+previews into app cache when you ask for them. Selected RAW downloads use the
+RAW filenames reported by the camera list and are written to `Download/k1gal`.
+
+The point is to keep the slow K-1 Wi-Fi link out of the browsing loop: list
+quickly, preview selectively, swipe through cached or lazily fetched neighbors,
+and download RAWs only after deciding what is worth keeping.
+
 The app is designed for the "small JPEG previews on SD card" workflow:
 
 1. Connect the Pixel to the `PENTAX_...` Wi-Fi network.
