@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="/icons/play_store_icon_512.png" width="400">
+</p>
+
 # k1gal
 
 Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.2.3`.
