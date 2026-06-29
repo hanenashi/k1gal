@@ -21,12 +21,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -48,7 +44,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -58,6 +56,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -68,12 +67,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -97,16 +96,24 @@ private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
 private const val APP_VERSION = "0.2.3"
 private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
+private const val PREVIEW_ASPECT_RATIO = 1.5f
 
 private val K1DarkColors = darkColorScheme(
-    primary = Color(0xff9f7aea),
-    onPrimary = Color.White,
-    surface = Color(0xff101010),
-    onSurface = Color(0xffeeeeee),
-    surfaceVariant = Color(0xff242424),
-    onSurfaceVariant = Color(0xffd0d0d0),
-    outline = Color(0xff8c8794),
+    primary = Color(0xffff8a24),
+    onPrimary = Color(0xff180900),
+    secondary = Color(0xffffb15c),
+    onSecondary = Color(0xff180900),
+    surface = Color(0xff0d0b09),
+    onSurface = Color(0xfffff1e3),
+    surfaceVariant = Color(0xff241913),
+    onSurfaceVariant = Color(0xffffc08a),
+    outline = Color(0xffb8662c),
 )
+
+enum class DownloadKind {
+    JPEG,
+    RAW,
+}
 
 data class PhotoItem(
     val dir: String,
@@ -162,7 +169,7 @@ class MainActivity : ComponentActivity() {
                     status = "Using likely K-1 address: $cameraIp"
                 },
                 onClear = { clearCache() },
-                onDownloadSelected = { downloadSelectedRaws() },
+                onDownloadSelected = { downloadSelected(it) },
                 onOpen = { openPhoto(it) },
                 onCloseViewer = { closeViewer() },
                 onViewerPrev = { openAdjacentPhoto(-1) },
@@ -361,6 +368,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun downloadSelected(kind: DownloadKind) {
+        when (kind) {
+            DownloadKind.JPEG -> downloadSelectedJpegs()
+            DownloadKind.RAW -> downloadSelectedRaws()
+        }
+    }
+
+    private fun downloadSelectedJpegs() {
+        val targets = selected.toList()
+        if (targets.isEmpty()) return
+        startWork("Saving ${targets.size} JPEG file(s)...") { ip, sd ->
+            var saved = 0
+            targets.forEachIndexed { index, photo ->
+                if (cancelRequested) return@startWork
+                runOnUiThread { status = "JPEG ${index + 1}/${targets.size}: ${photo.jpg}" }
+                val cachedPhoto = ensurePreviewCached(ip, sd, photo)
+                val source = cachedPhoto.cacheFile
+                if (source != null && source.exists() && source.length() > 0L) {
+                    saveDownload(cachedPhoto.jpg, source, "image/jpeg")
+                    saved += 1
+                }
+            }
+            runOnUiThread { status = "Saved $saved JPEG file(s) to Download/k1gal." }
+        }
+    }
+
     private fun downloadSelectedRaws() {
         val targets = selected.toList()
         if (targets.isEmpty()) return
@@ -389,16 +422,16 @@ class MainActivity : ComponentActivity() {
             temp.delete()
             error("$raw downloaded only $size bytes; camera did not return a RAW file")
         }
-        saveDownload(raw, temp)
+        saveDownload(raw, temp, "application/octet-stream")
         temp.delete()
         return true
     }
 
-    private fun saveDownload(fileName: String, source: File) {
+    private fun saveDownload(fileName: String, source: File, mimeType: String) {
         val resolver = contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
             put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/k1gal")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
@@ -515,7 +548,7 @@ fun K1GalApp(
     onStop: () -> Unit,
     onUseCameraIp: () -> Unit,
     onClear: () -> Unit,
-    onDownloadSelected: () -> Unit,
+    onDownloadSelected: (DownloadKind) -> Unit,
     onOpen: (PhotoItem) -> Unit,
     onCloseViewer: () -> Unit,
     onViewerPrev: () -> Unit,
@@ -524,9 +557,10 @@ fun K1GalApp(
     onOpenGithub: () -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
+    var downloadChoiceOpen by remember { mutableStateOf(false) }
 
     MaterialTheme(colorScheme = K1DarkColors) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xff101010)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xff0b0907)) {
             Box(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     ActionBar(
@@ -538,7 +572,7 @@ fun K1GalApp(
                         onPreviewAll = onPreviewAll,
                         onStop = onStop,
                         onClear = onClear,
-                        onDownloadSelected = onDownloadSelected,
+                        onDownloadSelected = { downloadChoiceOpen = true },
                     )
                     if (settingsOpen) {
                         SettingsPanel(
@@ -588,9 +622,40 @@ fun K1GalApp(
                         )
                     }
                 }
+                if (downloadChoiceOpen) {
+                    DownloadChoiceDialog(
+                        onDismiss = { downloadChoiceOpen = false },
+                        onChoose = { kind ->
+                            downloadChoiceOpen = false
+                            onDownloadSelected(kind)
+                        },
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+fun DownloadChoiceDialog(
+    onDismiss: () -> Unit,
+    onChoose: (DownloadKind) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Download selected") },
+        text = { Text("Save the cached camera JPEGs or download matching RAW originals.") },
+        confirmButton = {
+            TextButton(onClick = { onChoose(DownloadKind.RAW) }) {
+                Text("RAW")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onChoose(DownloadKind.JPEG) }) {
+                Text("JPEG")
+            }
+        },
+    )
 }
 
 @Composable
@@ -609,7 +674,7 @@ fun ActionBar(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .background(Color(0xff151515))
+            .background(Color(0xff120c08))
             .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -617,7 +682,7 @@ fun ActionBar(
         CompactButton("Set", onSettings)
         CompactButton(if (busy) "Stop" else "Scan", if (busy) onStop else onScan)
         CompactButton("All", onPreviewAll, enabled = !busy && canPreviewAll)
-        CompactButton("RAW", onDownloadSelected, enabled = !busy && selectedCount > 0)
+        CompactButton("Down", onDownloadSelected, enabled = !busy && selectedCount > 0)
         CompactButton("Clear", onClear, enabled = !busy)
     }
 }
@@ -654,7 +719,7 @@ fun SettingsPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xff1a1a1a))
+            .background(Color(0xff160f0a))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -684,13 +749,13 @@ fun SettingsPanel(
             OutlinedButton(onClick = onOpenGithub) { Text("GitHub") }
         }
         Text(
-            "TL;DR: connect to Pentax Wi-Fi, Scan to list files, tap cards for just the previews you need, swipe in viewer, select keepers, then RAW saves originals to Download/k1gal.",
-            color = Color(0xffd0d0d0),
+            "TL;DR: connect to Pentax Wi-Fi, Scan to list files, tap cards for just the previews you need, swipe in viewer, select keepers, then Down saves JPEG previews or RAW originals to Download/k1gal.",
+            color = Color(0xffffc08a),
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
             GITHUB_URL,
-            color = Color(0xff9f7aea),
+            color = Color(0xffff8a24),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -706,7 +771,7 @@ fun FooterStatus(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xff242424))
+            .background(Color(0xff1a1009))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -714,11 +779,11 @@ fun FooterStatus(
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
                 strokeWidth = 2.dp,
-                color = Color(0xff98d8ff),
+                color = Color(0xffff8a24),
             )
             Spacer(Modifier.width(8.dp))
         }
-        Text(status, color = Color(0xffeeeeee), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(status, color = Color(0xffff9d3d), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -735,7 +800,7 @@ fun PhotoCard(
             .fillMaxWidth()
             .combinedClickable(onClick = onOpen, onLongClick = onToggleSelect),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Color(0xff24483f) else Color(0xff1c1c1c),
+            containerColor = if (isSelected) Color(0xff3a2110) else Color(0xff18120e),
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
@@ -750,10 +815,10 @@ fun PhotoCard(
                 )
             } else {
                 Box(
-                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xff303030)),
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xff2a1a10)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(if (photo.loading) "..." else "tap", color = Color(0xffbdbdbd))
+                    Text(if (photo.loading) "..." else "tap", color = Color(0xffffb15c))
                 }
             }
             Checkbox(
@@ -767,7 +832,7 @@ fun PhotoCard(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = Color.White,
+            color = Color(0xfffff1e3),
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
@@ -775,7 +840,7 @@ fun PhotoCard(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 0.dp).padding(bottom = 6.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = Color(0xffbdbdbd),
+            color = Color(0xffffb15c),
             style = MaterialTheme.typography.labelSmall,
         )
     }
@@ -793,51 +858,138 @@ fun Viewer(
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var imageBounds by remember { mutableStateOf<Rect?>(null) }
+    var lastTapAtMs by remember { mutableStateOf(0L) }
+    var lastTapPosition by remember { mutableStateOf(Offset.Zero) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(photo.jpg) {
-                detectTapGestures(
-                    onDoubleTap = {
-                        if (scale > 1f) {
-                            scale = 1f
-                            offset = Offset.Zero
+                val tapSlop = 18.dp.toPx()
+                val doubleTapSlop = 80.dp.toPx()
+                val swipeThreshold = 44.dp.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startedZoomed = scale > 1.05f
+                    var dragTotal = Offset.Zero
+                    var maxPointers = 1
+                    var transformed = false
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.isEmpty()) break
+
+                        maxPointers = maxOf(maxPointers, pressed.size)
+                        if (pressed.size >= 2) {
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            scale = (scale * zoom).coerceIn(1f, 8f)
+                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                            transformed = true
+                            event.changes.forEach { it.consume() }
                         } else {
-                            scale = 3f
-                            offset = Offset.Zero
+                            val change = pressed.first()
+                            val pan = change.positionChange()
+                            if (scale > 1.05f || startedZoomed || transformed) {
+                                if (scale > 1f) {
+                                    offset += pan
+                                    change.consume()
+                                }
+                            } else {
+                                dragTotal += pan
+                                if (dragTotal.getDistance() > tapSlop) change.consume()
+                            }
                         }
-                    },
-                    onTap = {
-                        if (scale <= 1f) onClose()
                     }
-                )
-            }
-            .pointerInput(photo.jpg) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 8f)
-                    if (scale > 1f) {
-                        offset += pan
-                    } else {
+
+                    if (scale <= 1.01f) {
+                        scale = 1f
                         offset = Offset.Zero
                     }
-                }
-            }
-            .pointerInput(photo.jpg) {
-                var dragTotal = 0f
-                detectHorizontalDragGestures(
-                    onDragStart = { dragTotal = 0f },
-                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                    onDragEnd = {
-                        if (scale <= 1.1f && abs(dragTotal) > 90f) {
-                            if (dragTotal < 0) onNext() else onPrev()
+
+                    val bounds = imageBounds
+                    val downInsideImage = bounds?.contains(down.position) == true
+                    val wasTap = maxPointers == 1 && !transformed && dragTotal.getDistance() <= tapSlop
+                    if (wasTap) {
+                        val isDoubleTap = downInsideImage &&
+                            down.uptimeMillis - lastTapAtMs <= 320L &&
+                            (down.position - lastTapPosition).getDistance() <= doubleTapSlop
+                        if (isDoubleTap) {
+                            if (scale > 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = 3f
+                                offset = Offset.Zero
+                            }
+                            lastTapAtMs = 0L
+                        } else {
+                            lastTapAtMs = down.uptimeMillis
+                            lastTapPosition = down.position
+                            if (!downInsideImage && scale <= 1f) onClose()
+                        }
+                    } else if (!transformed && !startedZoomed && scale <= 1.05f) {
+                        val horizontal = abs(dragTotal.x)
+                        val vertical = abs(dragTotal.y)
+                        if (horizontal > swipeThreshold && horizontal > vertical * 1.15f) {
+                            if (dragTotal.x < 0f) onNext() else onPrev()
                         }
                     }
-                )
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            val viewportRatio = maxWidth / maxHeight
+            val imageWidth = if (viewportRatio > PREVIEW_ASPECT_RATIO) {
+                maxHeight * PREVIEW_ASPECT_RATIO
+            } else {
+                maxWidth
+            }
+            val imageHeight = if (viewportRatio > PREVIEW_ASPECT_RATIO) {
+                maxHeight
+            } else {
+                maxWidth / PREVIEW_ASPECT_RATIO
+            }
+
+            Image(
+                painter = rememberAsyncImagePainter(photo.cacheFile),
+                contentDescription = photo.jpg,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .width(imageWidth)
+                    .height(imageHeight)
+                    .onGloballyPositioned { imageBounds = it.boundsInRoot() }
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offset.x,
+                        translationY = offset.y,
+                    ),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 18.dp)
+                .background(Color(0xcc160d07), RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "${index + 1}/$total  ${photo.displayName()}",
+                color = Color(0xfffff1e3),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(photo.takenAt ?: photo.dir, color = Color(0xffffb15c))
+        }
         OutlinedButton(
             onClick = onClose,
             modifier = Modifier
@@ -845,47 +997,13 @@ fun Viewer(
                 .statusBarsPadding()
                 .padding(top = 12.dp, end = 16.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color(0x99160d07),
+                contentColor = Color(0xffffb15c),
+            ),
         ) {
             Text("Close")
-        }
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            val candidateWidth = this.maxWidth - 32.dp
-            val maxImageHeight = this.maxHeight - 96.dp
-            val widthFromHeight = maxImageHeight * 1.5f
-            val imageWidth = if (candidateWidth < widthFromHeight) candidateWidth else widthFromHeight
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Image(
-                    painter = rememberAsyncImagePainter(photo.cacheFile),
-                    contentDescription = photo.jpg,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .width(imageWidth)
-                        .aspectRatio(1.5f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
-                            translationY = offset.y
-                        ),
-                )
-                if (scale <= 1f) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "${index + 1}/$total  ${photo.displayName()}",
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
-                }
-            }
         }
         loadingLabel?.let { label ->
             Row(
@@ -896,14 +1014,14 @@ fun Viewer(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = Color(0xff98d8ff),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(label, color = Color.White)
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xffff8a24),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, color = Color(0xfffff1e3))
+                }
             }
-        }
     }
 }
 
@@ -962,7 +1080,7 @@ fun Header(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onUseCameraIp, enabled = !busy) { Text("K-1 IP") }
-            Button(onClick = onDownloadSelected, enabled = !busy && selectedCount > 0) { Text("RAW") }
+            Button(onClick = onDownloadSelected, enabled = !busy && selectedCount > 0) { Text("Down") }
             OutlinedButton(onClick = onClear, enabled = !busy) { Text("Clear") }
         }
     }
