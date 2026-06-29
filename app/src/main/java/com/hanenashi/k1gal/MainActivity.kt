@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -61,6 +62,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.Inet4Address
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        cameraIp = guessCameraIp()
         loadExistingCache()
         setContent {
             K1GalApp(
@@ -104,6 +107,10 @@ class MainActivity : ComponentActivity() {
                 busy = busy,
                 viewer = viewer,
                 onScan = { scanAndCache() },
+                onUseCameraIp = {
+                    cameraIp = guessCameraIp()
+                    status = "Using likely K-1 address: $cameraIp"
+                },
                 onClear = { clearCache() },
                 onDownloadSelected = { downloadSelectedRaws() },
                 onOpen = { viewer = it },
@@ -116,13 +123,21 @@ class MainActivity : ComponentActivity() {
     private fun scanAndCache() {
         if (busy) return
         busy = true
+        val ip = cameraIp.trim()
+        val sd = sdCard.trim()
+        val localIps = wifiLocalIps()
+        if (localIps.contains(ip)) {
+            status = "$ip is this phone. Use the K-1 gateway, usually ${guessCameraIp()}."
+            busy = false
+            return
+        }
         status = "Binding to Wi-Fi and reading K-1 list..."
 
         thread(name = "k1-scan") {
             try {
                 bindProcessToWifi()
-                val listed = fetchPhotoList(cameraIp.trim(), sdCard.trim())
-                val cacheDir = File(cacheDir, "previews/sd$sdCard").apply { mkdirs() }
+                val listed = fetchPhotoList(ip, sd)
+                val cacheDir = File(cacheDir, "previews/sd${sanitizeSd(sd)}").apply { mkdirs() }
 
                 photos.clear()
                 selected.clear()
@@ -131,7 +146,7 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread { status = "Caching ${index + 1}/${listed.size}: ${photo.jpg}" }
                     val file = File(cacheDir, "${photo.dir}_${photo.jpg}".replace(Regex("[^A-Za-z0-9._-]"), "_"))
                     if (!file.exists() || file.length() == 0L) {
-                        downloadToFile(cameraIp.trim(), sdCard.trim(), photo.dir, photo.jpg, file)
+                        downloadToFile(ip, sd, photo.dir, photo.jpg, file)
                     }
                     runOnUiThread { photos.add(photo.copy(cacheFile = file)) }
                 }
@@ -264,6 +279,41 @@ class MainActivity : ComponentActivity() {
         cm.bindProcessToNetwork(wifiNetwork)
     }
 
+    private fun guessCameraIp(): String {
+        val localIp = wifiLocalIps().firstOrNull { it.startsWith("192.168.") }
+            ?: wifiLocalIps().firstOrNull { it.startsWith("10.") || it.matches(Regex("^172\\.(1[6-9]|2\\d|3[0-1])\\..*")) }
+        if (localIp != null) {
+            val pieces = localIp.split(".")
+            if (pieces.size == 4) {
+                return pieces.take(3).joinToString(".") + ".1"
+            }
+        }
+        return DEFAULT_CAMERA_IP
+    }
+
+    private fun wifiLocalIps(): List<String> {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        return cm.allNetworks
+            .filter { network ->
+                val capabilities = cm.getNetworkCapabilities(network)
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == false
+            }
+            .flatMap { network ->
+                cm.getLinkProperties(network)?.linkAddresses.orEmpty()
+                    .mapNotNull { linkAddress ->
+                        val address = linkAddress.address
+                        if (address is Inet4Address && !address.isLoopbackAddress) {
+                            address.hostAddress
+                        } else {
+                            null
+                        }
+                    }
+            }
+            .filterNot { it.startsWith("100.") }
+            .distinct()
+    }
+
     private fun httpText(url: String): String {
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
@@ -292,6 +342,7 @@ fun K1GalApp(
     busy: Boolean,
     viewer: PhotoItem?,
     onScan: () -> Unit,
+    onUseCameraIp: () -> Unit,
     onClear: () -> Unit,
     onDownloadSelected: () -> Unit,
     onOpen: (PhotoItem) -> Unit,
@@ -313,6 +364,7 @@ fun K1GalApp(
                         selectedCount = selected.size,
                         busy = busy,
                         onScan = onScan,
+                        onUseCameraIp = onUseCameraIp,
                         onClear = onClear,
                         onDownloadSelected = onDownloadSelected,
                     )
@@ -421,12 +473,14 @@ fun Header(
     selectedCount: Int,
     busy: Boolean,
     onScan: () -> Unit,
+    onUseCameraIp: () -> Unit,
     onClear: () -> Unit,
     onDownloadSelected: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .statusBarsPadding()
             .background(Color(0xfffaf8f0))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -459,6 +513,9 @@ fun Header(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onScan, enabled = !busy) {
                 Text("Scan")
+            }
+            OutlinedButton(onClick = onUseCameraIp, enabled = !busy) {
+                Text("K-1 IP")
             }
             Button(onClick = onDownloadSelected, enabled = !busy && selectedCount > 0) {
                 Text("RAW")
