@@ -1,6 +1,6 @@
 # k1gal
 
-Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.2.2`.
+Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.2.3`.
 
 ## Nerdy TL;DR
 

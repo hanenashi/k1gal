@@ -9,6 +9,7 @@ import android.net.Uri
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.view.View
 import androidx.activity.ComponentActivity
@@ -72,8 +73,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.rememberAsyncImagePainter
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -89,7 +88,7 @@ import kotlin.math.abs
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
-private const val APP_VERSION = "0.2.2"
+private const val APP_VERSION = "0.2.3"
 private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
 
 private val K1DarkColors = darkColorScheme(
@@ -126,6 +125,7 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     private var viewerIndex by mutableStateOf<Int?>(null)
     private var viewerLoadingLabel by mutableStateOf<String?>(null)
+    private var suppressViewerOpenUntilMs = 0L
 
     @Volatile
     private var cancelRequested = false
@@ -157,7 +157,7 @@ class MainActivity : ComponentActivity() {
                 onClear = { clearCache() },
                 onDownloadSelected = { downloadSelectedRaws() },
                 onOpen = { openPhoto(it) },
-                onCloseViewer = { viewerIndex = null },
+                onCloseViewer = { closeViewer() },
                 onViewerPrev = { openAdjacentPhoto(-1) },
                 onViewerNext = { openAdjacentPhoto(1) },
                 onToggleSelect = { toggleSelection(it) },
@@ -218,11 +218,20 @@ class MainActivity : ComponentActivity() {
         if (index < 0) return
         val cached = photos[index].cacheFile
         if (cached != null && cached.exists() && cached.length() > 0L) {
+            if (!canOpenViewer()) return
             viewerIndex = index
             return
         }
         fetchPreviewAt(index, openAfterFetch = false)
     }
+
+    private fun closeViewer() {
+        viewerIndex = null
+        suppressViewerOpenUntilMs = SystemClock.uptimeMillis() + 350L
+    }
+
+    private fun canOpenViewer(): Boolean =
+        SystemClock.uptimeMillis() >= suppressViewerOpenUntilMs
 
     private fun openPhotoAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
@@ -511,7 +520,7 @@ fun K1GalApp(
 
     MaterialTheme(colorScheme = K1DarkColors) {
         Surface(modifier = Modifier.fillMaxSize(), color = Color(0xff101010)) {
-            Box {
+            Box(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     ActionBar(
                         selectedCount = selected.size,
@@ -777,94 +786,86 @@ fun Viewer(
 ) {
     var dragTotal = 0f
     var imageBounds by remember { mutableStateOf<Rect?>(null) }
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true,
-        ),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xf5000000))
-                .pointerInput(photo.jpg) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val up = waitForUpOrCancellation()
-                        if (up != null && (up.position - down.position).getDistance() < 20f) {
-                            val bounds = imageBounds
-                            if (bounds == null || !bounds.contains(up.position)) onClose()
-                        }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(photo.jpg) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val up = waitForUpOrCancellation()
+                    if (up != null && (up.position - down.position).getDistance() < 20f) {
+                        val bounds = imageBounds
+                        if (bounds == null || !bounds.contains(up.position)) onClose()
                     }
                 }
-                .pointerInput(photo.jpg) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { dragTotal = 0f },
-                        onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                        onDragEnd = {
-                            if (abs(dragTotal) > 90f) {
-                                if (dragTotal < 0) onNext() else onPrev()
-                            }
-                        },
-                    )
-                },
+            }
+            .pointerInput(photo.jpg) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragTotal = 0f },
+                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                    onDragEnd = {
+                        if (abs(dragTotal) > 90f) {
+                            if (dragTotal < 0) onNext() else onPrev()
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 16.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Text("Close")
+        }
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
             contentAlignment = Alignment.Center,
         ) {
-            OutlinedButton(
-                onClick = onClose,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .statusBarsPadding()
-                    .padding(12.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            ) {
-                Text("Close")
-            }
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                val candidateWidth = maxWidth - 32.dp
-                val maxImageHeight = maxHeight - 96.dp
-                val widthFromHeight = maxImageHeight * 1.5f
-                val imageWidth = if (candidateWidth < widthFromHeight) candidateWidth else widthFromHeight
+            val candidateWidth = maxWidth - 32.dp
+            val maxImageHeight = maxHeight - 96.dp
+            val widthFromHeight = maxImageHeight * 1.5f
+            val imageWidth = if (candidateWidth < widthFromHeight) candidateWidth else widthFromHeight
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Image(
-                        painter = rememberAsyncImagePainter(photo.cacheFile),
-                        contentDescription = photo.jpg,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .width(imageWidth)
-                            .aspectRatio(1.5f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .onGloballyPositioned { imageBounds = it.boundsInRoot() },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
-                }
-            }
-            loadingLabel?.let { label ->
-                Row(
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Image(
+                    painter = rememberAsyncImagePainter(photo.cacheFile),
+                    contentDescription = photo.jpg,
+                    contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .background(Color(0xdd101010), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xff98d8ff),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(label, color = Color.White)
-                }
+                        .width(imageWidth)
+                        .aspectRatio(1.5f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .onGloballyPositioned { imageBounds = it.boundsInRoot() },
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("${index + 1}/$total  ${photo.displayName()}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(photo.takenAt ?: photo.dir, color = Color(0xffbdbdbd))
+            }
+        }
+        loadingLabel?.let { label ->
+            Row(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color(0xdd101010), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xff98d8ff),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(label, color = Color.White)
             }
         }
     }
