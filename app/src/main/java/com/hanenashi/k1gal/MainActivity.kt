@@ -86,6 +86,7 @@ import coil.compose.rememberAsyncImagePainter
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Call
+import okhttp3.FormBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -94,13 +95,14 @@ import java.io.InputStream
 import java.net.Inet4Address
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.math.abs
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 private const val MIN_RAW_BYTES = 1_000_000L
-private const val APP_VERSION = "0.2.3"
+private const val APP_VERSION = "0.3.0"
 private const val GITHUB_URL = "https://github.com/hanenashi/k1gal"
 private const val PREVIEW_ASPECT_RATIO = 1.5f
 
@@ -134,6 +136,7 @@ data class PhotoItem(
     val xv: String? = null,
     val orientation: Int? = null,
     val loading: Boolean = false,
+    val rawSizeBytes: Long? = null,
 )
 
 class MainActivity : ComponentActivity() {
@@ -147,6 +150,7 @@ class MainActivity : ComponentActivity() {
 
     private val photos = mutableStateListOf<PhotoItem>()
     private val selected = mutableStateListOf<PhotoItem>()
+    private val rawSizeRequests = mutableSetOf<String>()
 
     private var cameraIp by mutableStateOf(DEFAULT_CAMERA_IP)
     private var sdCard by mutableStateOf("1")
@@ -157,6 +161,8 @@ class MainActivity : ComponentActivity() {
     private var liveViewVisible by mutableStateOf(false)
     private var liveFrame by mutableStateOf<Bitmap?>(null)
     private var liveStatus by mutableStateOf("Live view stopped.")
+    private var captureBusy by mutableStateOf(false)
+    private var captureStatus by mutableStateOf<String?>(null)
     private var suppressViewerOpenUntilMs = 0L
 
     @Volatile
@@ -187,6 +193,8 @@ class MainActivity : ComponentActivity() {
                 liveViewVisible = liveViewVisible,
                 liveFrame = liveFrame,
                 liveStatus = liveStatus,
+                captureBusy = captureBusy,
+                captureStatus = captureStatus,
                 onScan = { scanListOnly() },
                 onPreviewAll = { previewAll() },
                 onStop = { stopWork() },
@@ -202,6 +210,7 @@ class MainActivity : ComponentActivity() {
                 onViewerNext = { openAdjacentPhoto(1) },
                 onOpenLiveView = { openLiveView() },
                 onCloseLiveView = { closeLiveView() },
+                onShoot = { shootFromLiveView() },
                 onToggleSelect = { toggleSelection(it) },
                 onOpenGithub = { openGithub() },
             )
@@ -267,7 +276,7 @@ class MainActivity : ComponentActivity() {
         val view = current.viewFile
         if (view != null && view.exists() && view.length() > 0L) {
             if (!canOpenViewer()) return
-            viewerIndex = index
+            openCachedViewer(index)
             return
         }
         val thumb = current.thumbFile
@@ -290,7 +299,7 @@ class MainActivity : ComponentActivity() {
         val photo = photos.getOrNull(index) ?: return
         val cached = photos[index].viewFile
         if (cached != null && cached.exists() && cached.length() > 0L) {
-            viewerIndex = index
+            openCachedViewer(index)
             return
         }
         viewerLoadingLabel = "Loading ${photo.displayName()}..."
@@ -311,7 +320,42 @@ class MainActivity : ComponentActivity() {
             val cachedPhoto = ensureViewCached(ip, sd, photo)
             runOnUiThread {
                 val freshIndex = photos.indexOfFirst { it.dir == cachedPhoto.dir && it.jpg == cachedPhoto.jpg }
-                if (openAfterFetch && freshIndex >= 0 && !cancelRequested) viewerIndex = freshIndex
+                if (openAfterFetch && freshIndex >= 0 && !cancelRequested) {
+                    openCachedViewer(freshIndex)
+                    status = "View cached: ${cachedPhoto.displayName()}."
+                }
+            }
+        }
+    }
+
+    private fun openCachedViewer(index: Int) {
+        viewerIndex = index
+        fetchRawSizeAt(index)
+    }
+
+    private fun fetchRawSizeAt(index: Int) {
+        val photo = photos.getOrNull(index) ?: return
+        val raw = photo.raw ?: return
+        if (photo.rawSizeBytes != null) return
+        val key = "${photo.dir}/$raw"
+        if (!rawSizeRequests.add(key)) return
+        val ip = cameraIp.trim()
+        val sd = sanitizeSd(sdCard.trim())
+
+        thread(name = "k1gal-raw-size") {
+            try {
+                bindProcessToWifi()
+                val bytes = remoteFileSize(ip, sd, photo.dir, raw)
+                if (bytes != null) {
+                    runOnUiThread {
+                        val freshIndex = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
+                        if (freshIndex >= 0) photos[freshIndex] = photos[freshIndex].copy(rawSizeBytes = bytes)
+                    }
+                }
+            } catch (_: Exception) {
+                // Size is optional metadata; a failed probe must not block the viewer.
+            } finally {
+                runOnUiThread { rawSizeRequests.remove(key) }
             }
         }
     }
@@ -327,6 +371,7 @@ class MainActivity : ComponentActivity() {
         viewerIndex = null
         liveFrame = null
         liveStatus = "Opening K-1 live view..."
+        captureStatus = null
         liveViewVisible = true
         val session = ++liveViewSession
 
@@ -396,6 +441,88 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun shootFromLiveView() {
+        if (captureBusy) return
+        captureBusy = true
+        cancelRequested = false
+        captureStatus = "Checking camera..."
+        val ip = cameraIp.trim()
+        val sd = sanitizeSd(sdCard.trim())
+
+        thread(name = "k1gal-capture") {
+            try {
+                bindProcessToWifi()
+                val camera = JSONObject(httpText("http://$ip/v1/props/camera"))
+                if (camera.optString("shootMode") != "single") {
+                    error("Set the K-1 drive mode to single")
+                }
+
+                val latestUrl = "http://$ip/v1/photos/latest/info?storage=sd$sd"
+                val before = JSONObject(httpText(latestUrl))
+                val beforeIdentity = "${before.optString("dir")}/${before.optString("file")}"
+                runOnUiThread { captureStatus = "Focusing..." }
+
+                val request = Request.Builder()
+                    .url("http://$ip/v1/camera/shoot")
+                    .post(FormBody.Builder().add("af", "auto").build())
+                    .build()
+                val shoot = client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) error("Shutter HTTP ${response.code}")
+                    JSONObject(response.body?.string() ?: error("Empty shutter response"))
+                }
+                if (shoot.optInt("errCode") != 200) {
+                    error(shoot.optString("errMsg", "Camera rejected shutter"))
+                }
+
+                runOnUiThread { captureStatus = "Capturing..." }
+                var captured: JSONObject? = null
+                for (attempt in 0 until 80) {
+                    val latest = JSONObject(httpText(latestUrl))
+                    val identity = "${latest.optString("dir")}/${latest.optString("file")}"
+                    if (latest.optBoolean("captured") && identity != beforeIdentity) {
+                        captured = latest
+                        break
+                    }
+                    Thread.sleep(250)
+                }
+                val metadata = captured ?: error("Timed out waiting for captured photo")
+                val capturedFile = metadata.optString("file")
+                val jpg = if (capturedFile.endsWith(".JPG", ignoreCase = true)) {
+                    capturedFile
+                } else {
+                    capturedFile.substringBeforeLast(".") + ".JPG"
+                }
+                val dir = metadata.optString("dir")
+                val listed = fetchPhotoList(ip, sd)
+                val listedPhoto = listed.firstOrNull { it.dir == dir && it.jpg.equals(jpg, ignoreCase = true) }
+                    ?: PhotoItem(dir, jpg, null, null, null, null)
+                val thumb = cachedPhotoFile(sd, dir, jpg, "thumbs")
+                if (!thumb.exists() || thumb.length() == 0L) {
+                    downloadToFile(ip, sd, dir, jpg, thumb, "thumb")
+                }
+                val newPhoto = listedPhoto.copy(
+                    thumbFile = thumb,
+                    takenAt = metadata.optString("datetime").takeIf { it.isNotBlank() },
+                    av = metadata.optString("av").takeIf { it.isNotBlank() },
+                    tv = metadata.optString("tv").takeIf { it.isNotBlank() },
+                    sv = metadata.optString("sv").takeIf { it.isNotBlank() },
+                    xv = metadata.optString("xv").takeIf { it.isNotBlank() },
+                    orientation = metadata.optInt("orientation").takeIf { metadata.has("orientation") },
+                )
+                runOnUiThread {
+                    val combined = photos.filterNot { it.dir == newPhoto.dir && it.jpg == newPhoto.jpg } + newPhoto
+                    photos.clear()
+                    photos.addAll(combined.sortedWith(compareBy({ it.dir }, { numberNearExtension(it.jpg) }, { it.jpg })))
+                    captureStatus = "Captured ${newPhoto.displayName()}"
+                }
+            } catch (e: Exception) {
+                runOnUiThread { captureStatus = "Capture failed: ${e.message ?: "unknown error"}" }
+            } finally {
+                runOnUiThread { captureBusy = false }
+            }
+        }
+    }
+
     private fun startWork(initialStatus: String, block: (ip: String, sd: String) -> Unit) {
         if (busy) return
         busy = true
@@ -421,7 +548,10 @@ class MainActivity : ComponentActivity() {
                 }
             } finally {
                 runOnUiThread {
-                    if (cancelRequested) status = "Stopped."
+                    if (cancelRequested) {
+                        val kept = recoverCachedPhotos(sd)
+                        status = "Stopped. Kept $kept cached thumbnail(s)."
+                    }
                     viewerLoadingLabel = null
                     busy = false
                 }
@@ -518,15 +648,82 @@ class MainActivity : ComponentActivity() {
         fileName: String,
         target: File,
         size: String? = null,
+        onProgress: ((downloadedBytes: Long, totalBytes: Long?) -> Unit)? = null,
     ) {
         if (cancelRequested) return
         val request = Request.Builder().url(photoUrl(ip, sd, dir, fileName, size)).build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("HTTP ${response.code} for $fileName")
-            val body = response.body ?: error("Empty body for $fileName")
-            target.parentFile?.mkdirs()
-            target.outputStream().use { output -> body.byteStream().copyTo(output) }
+        target.parentFile?.mkdirs()
+        val partial = File(target.parentFile, "${target.name}.download")
+        partial.delete()
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("HTTP ${response.code} for $fileName")
+                val body = response.body ?: error("Empty body for $fileName")
+                val totalBytes = body.contentLength().takeIf { it >= 0L }
+                var downloadedBytes = 0L
+                var lastUpdateAt = 0L
+                onProgress?.invoke(0L, totalBytes)
+                partial.outputStream().use { output ->
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (cancelRequested) error("Download stopped")
+                            output.write(buffer, 0, count)
+                            downloadedBytes += count
+                            val now = SystemClock.uptimeMillis()
+                            if (now - lastUpdateAt >= 100L) {
+                                onProgress?.invoke(downloadedBytes, totalBytes)
+                                lastUpdateAt = now
+                            }
+                        }
+                    }
+                }
+                onProgress?.invoke(downloadedBytes, totalBytes)
+            }
+            if (cancelRequested) {
+                partial.delete()
+                return
+            }
+            if (target.exists()) target.delete()
+            if (!partial.renameTo(target)) {
+                partial.copyTo(target, overwrite = true)
+                partial.delete()
+            }
+        } catch (e: Exception) {
+            partial.delete()
+            throw e
         }
+    }
+
+    private fun remoteFileSize(ip: String, sd: String, dir: String, fileName: String): Long? {
+        val request = Request.Builder()
+            .url(photoUrl(ip, sd, dir, fileName))
+            .header("Connection", "close")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            return response.body?.contentLength()?.takeIf { it >= 0L }
+        }
+    }
+
+    private fun recoverCachedPhotos(sd: String): Int {
+        var kept = 0
+        photos.indices.forEach { index ->
+            val photo = photos[index]
+            val thumb = cachedPhotoFile(sd, photo.dir, photo.jpg, "thumbs")
+                .takeIf { it.exists() && it.length() > 0L }
+            val view = cachedPhotoFile(sd, photo.dir, photo.jpg, "views")
+                .takeIf { it.exists() && it.length() > 0L }
+            if (thumb != null) kept += 1
+            photos[index] = photo.copy(
+                thumbFile = thumb,
+                viewFile = view,
+                loading = false,
+            )
+        }
+        return kept
     }
 
     private fun downloadSelected(kind: DownloadKind) {
@@ -541,16 +738,23 @@ class MainActivity : ComponentActivity() {
         if (targets.isEmpty()) return
         startWork("Saving ${targets.size} JPEG file(s)...") { ip, sd ->
             var saved = 0
+            var savedBytes = 0L
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
-                runOnUiThread { status = "JPEG ${index + 1}/${targets.size}: ${photo.jpg}" }
                 val temp = File(cacheDir, "downloads/${photo.dir}_${photo.jpg}.part").apply { parentFile?.mkdirs() }
-                downloadToFile(ip, sd, photo.dir, photo.jpg, temp, "full")
+                downloadToFile(ip, sd, photo.dir, photo.jpg, temp, "full") { downloaded, total ->
+                    runOnUiThread {
+                        status = downloadProgressText("JPEG", index + 1, targets.size, downloaded, total)
+                    }
+                }
                 saveDownload(photo.jpg, temp, "image/jpeg")
+                savedBytes += temp.length()
                 temp.delete()
                 saved += 1
             }
-            runOnUiThread { status = "Saved $saved JPEG file(s) to Download/k1gal." }
+            runOnUiThread {
+                status = "Saved $saved JPEG file(s) (${formatMegabytes(savedBytes)}) to Download/k1gal."
+            }
         }
     }
 
@@ -559,6 +763,7 @@ class MainActivity : ComponentActivity() {
         if (targets.isEmpty()) return
         startWork("Downloading ${targets.size} RAW file(s)...") { ip, sd ->
             var saved = 0
+            var savedBytes = 0L
             var missing = 0
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
@@ -567,24 +772,41 @@ class MainActivity : ComponentActivity() {
                     missing += 1
                     return@forEachIndexed
                 }
-                runOnUiThread { status = "RAW ${index + 1}/${targets.size}: $raw" }
-                if (downloadRawToDownloads(ip, sd, photo.dir, raw)) saved += 1
+                val bytes = downloadRawToDownloads(ip, sd, photo.dir, raw) { downloaded, total ->
+                    runOnUiThread {
+                        status = downloadProgressText("RAW", index + 1, targets.size, downloaded, total)
+                    }
+                }
+                if (bytes != null) {
+                    saved += 1
+                    savedBytes += bytes
+                }
             }
-            runOnUiThread { status = "Saved $saved RAW file(s). $missing selected item(s) had no RAW listed." }
+            runOnUiThread {
+                val missingText = if (missing > 0) " $missing selected item(s) had no RAW listed." else ""
+                status = "Saved $saved RAW file(s) (${formatMegabytes(savedBytes)}).$missingText"
+            }
         }
     }
 
-    private fun downloadRawToDownloads(ip: String, sd: String, dir: String, raw: String): Boolean {
+    private fun downloadRawToDownloads(
+        ip: String,
+        sd: String,
+        dir: String,
+        raw: String,
+        onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
+    ): Long? {
         val temp = File(cacheDir, "raw/$raw.part").apply { parentFile?.mkdirs() }
-        downloadToFile(ip, sd, dir, raw, temp)
+        downloadToFile(ip, sd, dir, raw, temp, onProgress = onProgress)
         if (temp.length() < MIN_RAW_BYTES) {
             val size = temp.length()
             temp.delete()
             error("$raw downloaded only $size bytes; camera did not return a RAW file")
         }
+        val bytes = temp.length()
         saveDownload(raw, temp, "application/octet-stream")
         temp.delete()
-        return true
+        return bytes
     }
 
     private fun saveDownload(fileName: String, source: File, mimeType: String) {
@@ -730,6 +952,8 @@ fun K1GalApp(
     liveViewVisible: Boolean,
     liveFrame: Bitmap?,
     liveStatus: String,
+    captureBusy: Boolean,
+    captureStatus: String?,
     onScan: () -> Unit,
     onPreviewAll: () -> Unit,
     onStop: () -> Unit,
@@ -742,6 +966,7 @@ fun K1GalApp(
     onViewerNext: () -> Unit,
     onOpenLiveView: () -> Unit,
     onCloseLiveView: () -> Unit,
+    onShoot: () -> Unit,
     onToggleSelect: (PhotoItem) -> Unit,
     onOpenGithub: () -> Unit,
 ) {
@@ -816,7 +1041,10 @@ fun K1GalApp(
                     LiveViewer(
                         frame = liveFrame,
                         status = liveStatus,
+                        captureBusy = captureBusy,
+                        captureStatus = captureStatus,
                         onClose = onCloseLiveView,
+                        onShoot = onShoot,
                     )
                 }
                 if (downloadChoiceOpen) {
@@ -1010,7 +1238,10 @@ fun PhotoCard(
                     painter = rememberAsyncImagePainter(cacheFile),
                     contentDescription = photo.jpg,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .graphicsLayer(rotationZ = orientationRotation(photo.orientation)),
                 )
             } else {
                 Box(
@@ -1049,7 +1280,10 @@ fun PhotoCard(
 fun LiveViewer(
     frame: Bitmap?,
     status: String,
+    captureBusy: Boolean,
+    captureStatus: String?,
     onClose: () -> Unit,
+    onShoot: () -> Unit,
 ) {
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black),
@@ -1066,7 +1300,7 @@ fun LiveViewer(
             CircularProgressIndicator(color = Color(0xffff8a24))
         }
         Text(
-            status,
+            captureStatus ?: status,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 28.dp)
@@ -1076,6 +1310,7 @@ fun LiveViewer(
         )
         OutlinedButton(
             onClick = onClose,
+            enabled = !captureBusy,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
@@ -1088,6 +1323,20 @@ fun LiveViewer(
             ),
         ) {
             Text("Close")
+        }
+        Button(
+            onClick = onShoot,
+            enabled = !captureBusy && frame != null,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 110.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xffd65a19),
+                contentColor = Color.White,
+            ),
+        ) {
+            Text(if (captureBusy) "Capturing..." else "Shutter")
         }
     }
 }
@@ -1192,33 +1441,45 @@ fun Viewer(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
+            val portrait = photo.orientation == 6 || photo.orientation == 8
+            val displayAspectRatio = if (portrait) 1f / PREVIEW_ASPECT_RATIO else PREVIEW_ASPECT_RATIO
             val viewportRatio = maxWidth / maxHeight
-            val imageWidth = if (viewportRatio > PREVIEW_ASPECT_RATIO) {
-                maxHeight * PREVIEW_ASPECT_RATIO
+            val displayWidth = if (viewportRatio > displayAspectRatio) {
+                maxHeight * displayAspectRatio
             } else {
                 maxWidth
             }
-            val imageHeight = if (viewportRatio > PREVIEW_ASPECT_RATIO) {
+            val displayHeight = if (viewportRatio > displayAspectRatio) {
                 maxHeight
             } else {
-                maxWidth / PREVIEW_ASPECT_RATIO
+                maxWidth / displayAspectRatio
             }
+            val rawWidth = if (portrait) displayHeight else displayWidth
+            val rawHeight = if (portrait) displayWidth else displayHeight
 
-            Image(
-                painter = rememberAsyncImagePainter(photo.viewFile),
-                contentDescription = photo.jpg,
-                contentScale = ContentScale.Fit,
+            Box(
                 modifier = Modifier
-                    .width(imageWidth)
-                    .height(imageHeight)
-                    .onGloballyPositioned { imageBounds = it.boundsInRoot() }
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offset.x,
-                        translationY = offset.y,
-                    ),
-            )
+                    .width(displayWidth)
+                    .height(displayHeight)
+                    .onGloballyPositioned { imageBounds = it.boundsInRoot() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = rememberAsyncImagePainter(photo.viewFile),
+                    contentDescription = photo.jpg,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .width(rawWidth)
+                        .height(rawHeight)
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y,
+                            rotationZ = orientationRotation(photo.orientation),
+                        ),
+                )
+            }
         }
         Column(
             modifier = Modifier
@@ -1235,7 +1496,11 @@ fun Viewer(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(photo.exposureMetaText(), color = Color(0xffffb15c))
-            Text(photo.takenAt ?: photo.dir, color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
+            Text(photo.viewerTimestamp(), color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
+            photo.raw?.let { raw ->
+                val size = photo.rawSizeBytes?.let(::formatMegabytes) ?: "checking size..."
+                Text("$raw  $size", color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
+            }
         }
         OutlinedButton(
             onClick = onClose,
@@ -1348,8 +1613,15 @@ private fun String.isRawName(): Boolean =
 
 private fun PhotoItem.displayName(): String = jpg.substringBeforeLast(".")
 
-private fun PhotoItem.cardMetaText(): String {
-    return exposureMetaText().ifBlank { takenAt ?: if (raw != null) "RAW" else "JPG" }
+private fun PhotoItem.cardMetaText(): String =
+    compactDate(takenAt) ?: if (raw != null) "RAW" else "JPG"
+
+private fun compactDate(value: String?): String? {
+    if (value == null) return null
+    Regex("^(\\d{4})[-:](\\d{2})[-:](\\d{2})").find(value)?.let { match ->
+        return "${match.groupValues[1].takeLast(2)}/${match.groupValues[2]}/${match.groupValues[3]}"
+    }
+    return Regex("^(\\d{2})/(\\d{2})/(\\d{2})").find(value)?.value
 }
 
 private fun PhotoItem.exposureMetaText(): String =
@@ -1359,6 +1631,36 @@ private fun PhotoItem.exposureMetaText(): String =
         sv?.let { "ISO $it" },
         xv?.takeUnless { it == "0" || it == "0.0" }?.let { "EV $it" },
     ).joinToString("  ")
+
+private fun PhotoItem.viewerTimestamp(): String =
+    takenAt?.replace('T', ' ') ?: dir
+
+private fun downloadProgressText(
+    kind: String,
+    currentFile: Int,
+    fileCount: Int,
+    downloadedBytes: Long,
+    totalBytes: Long?,
+): String {
+    val progress = if (totalBytes != null) {
+        "${formatMegabytes(downloadedBytes, includeUnit = false)}/${formatMegabytes(totalBytes)}"
+    } else {
+        formatMegabytes(downloadedBytes)
+    }
+    return "$kind $currentFile/$fileCount  $progress"
+}
+
+private fun formatMegabytes(bytes: Long, includeUnit: Boolean = true): String {
+    val value = String.format(Locale.US, "%.1f", bytes / 1_000_000.0)
+    return if (includeUnit) "$value MB" else value
+}
+
+private fun orientationRotation(orientation: Int?): Float = when (orientation) {
+    3 -> 180f
+    6 -> 90f
+    8 -> 270f
+    else -> 0f
+}
 
 private fun formatShutter(value: String): String {
     val parts = value.split(".", limit = 2)

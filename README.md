@@ -4,7 +4,7 @@
 
 # k1gal
 
-Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.2.3`.
+Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.3.0`.
 
 ## Nerdy TL;DR
 
@@ -57,8 +57,9 @@ assuming every Pentax firmware behaves identically.
 
 Current development status: K-1 capability discovery is verified on firmware
 2.51; server-sized thumbnails, viewer images, photo metadata, and explicit
-open/close live view are implemented and tested on a Pixel 10a. Remote shutter
-and writable camera controls remain future work.
+open/close live view are implemented and tested on a Pixel 10a. Guarded remote
+shutter from live view is also implemented and verified; writable camera
+controls remain future work.
 
 ### 1. Learn the connected K-1 safely — verified
 
@@ -83,6 +84,8 @@ and writable camera controls remain future work.
   orientation from `/v1/photos/{dir}/{file}/info`.
 - [x] Fetch metadata lazily with bounded work so scanning stays quick.
 - [x] Add concise metadata to cards and the fullscreen overlay.
+- [x] Read RAW `Content-Length` on demand for fullscreen file-size metadata and
+  show streamed `downloaded/total MB` progress for JPEG and RAW downloads.
 - [x] Treat location metadata as private and hide it by default.
 
 ### 4. On-demand live view — core completed
@@ -96,16 +99,17 @@ and writable camera controls remain future work.
   starts automatically.
 - [ ] Run longer rotation, reconnect, heat, battery, and memory-pressure tests.
 
-### 5. Remote shutter — next
+### 5. Remote shutter — completed
 
-- Add a deliberate shutter button inside live view.
-- Verify `POST /v1/camera/shoot` and autofocus values on the actual K-1.
-- Prevent duplicate capture requests and use a bounded timeout.
-- Poll `/v1/photos/latest/info` for a newly captured file, then add its
+- [x] Add a deliberate shutter button inside live view.
+- [x] Verify `POST /v1/camera/shoot` with `af=auto` on the actual K-1.
+- [x] Refuse non-single drive mode, prevent duplicate capture requests, and use
+  a bounded timeout.
+- [x] Poll `/v1/photos/latest/info` for a newly captured file, then add its
   thumbnail to the gallery.
-- Report errors without automatically retrying a shutter action.
+- [x] Report errors without automatically retrying a shutter action.
 
-### 6. Optional camera controls — later
+### 6. Optional camera controls — next
 
 - Consider aperture, shutter, ISO, exposure compensation, and white balance
   only after viewing and capture are reliable.

@@ -156,6 +156,13 @@ returned these results:
 Exact byte counts vary by image. Record response status, `Content-Type`, byte
 count, and decoded pixel dimensions—not image contents—in diagnostics.
 
+The K-1 rejects `HEAD` with HTTP 405, but a normal file `GET` supplies an exact
+`Content-Length` before the response body. Close that response immediately when
+probing metadata so the RAW is not downloaded. This supports an on-demand RAW
+size in the fullscreen viewer; do not probe every file during a gallery scan.
+During an actual download, use the same length with streamed byte counts for
+`downloaded/total MB` progress. A tested DNG reported 51,956,532 bytes.
+
 Proposed use:
 
 - `thumb`: grid cache and gallery cards.
@@ -302,10 +309,21 @@ Content-Type: application/x-www-form-urlencoded
 af=auto
 ```
 
-Known autofocus values in clients are `auto`, `on`, and `off`, but all must be
-verified on our K-1. Older code sent the same plain body with a nonstandard
-`text/xml` content type, so the camera may be permissive. Prefer form encoding
-and verify the actual response.
+Verified on the user's K-1 with drive mode set to `single`:
+
+- `POST /v1/camera/shoot` with form body `af=auto` returned HTTP 200,
+  `errCode: 200`, and `focused: true`.
+- Completion appeared after seven 250 ms polls in the direct probe.
+- The same flow succeeded while the app kept `/v1/liveview` open.
+- `/v1/photos/latest/info` first reported the new JPEG and later the paired DNG
+  under the same stem, so clients should normalize either filename to the JPEG
+  gallery identity.
+- The app fetched the new thumbnail and kept live view active after capture.
+
+Other autofocus values reported by clients are `on` and `off`, but they remain
+unverified on our K-1. Older code sent the same plain body with a nonstandard
+`text/xml` content type, so the camera may be permissive. `k1gal` uses standard
+form encoding.
 
 Proposed capture flow:
 
@@ -317,6 +335,9 @@ Proposed capture flow:
    `dir/file` changes, with a bounded timeout.
 6. Update the gallery and optionally fetch the new `thumb`/`view` image.
 7. Report timeout or camera error without blindly retrying the shutter.
+
+Before POST, `k1gal` reads `/v1/props/camera` and refuses capture unless
+`shootMode` is `single`. This prevents an accidental burst during API testing.
 
 The advertised split endpoints `/shoot/start` and `/shoot/finish` may support
 bulb/press-and-release behavior, but their methods and payloads are unknown.
