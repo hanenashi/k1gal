@@ -5,6 +5,22 @@ an implementation reference, not an official API specification.
 
 Last researched: 2026-07-13.
 
+### Verified K-1 test environment
+
+The user's `PENTAX K-1` running firmware `2.51` was probed directly on
+2026-07-13. Beechan used Ethernet for internet/Codex and bound camera requests
+to its Wi-Fi interface, because both the home LAN and camera LAN use
+`192.168.0.0/24` with a host at `192.168.0.1`.
+
+Verified on this camera:
+
+- `/v1/ping`, `/v1/apis`, scoped property endpoints, both SD file lists,
+  per-photo `/info`, and `thumb`/`view`/`full` image sizes return HTTP 200.
+- SD1 reported paired JPEG/RAW files; SD2 correctly returned an empty list.
+- The advertised API list includes every route recorded below.
+- Sensitive device properties really do include `key`, `ssid`, `serialNo`, and
+  `macAddress`; diagnostics must continue to allowlist fields.
+
 ## Evidence levels
 
 - **Confirmed in k1gal**: already exercised by this app against the user's K-1.
@@ -127,10 +143,18 @@ GET /v1/photos/{dir}/{filename}?size=view
 GET /v1/photos/{dir}/{filename}?size=full
 ```
 
-The interaction between `size` and `storage=sdN` is unverified on our K-1.
-Probe whether both query parameters are accepted together. Record response
-status, `Content-Type`, byte count, and decoded pixel dimensions—not image
-contents—in diagnostics.
+The K-1 accepts `size` together with `storage=sdN`. A representative XS3 JPEG
+returned these results:
+
+| Request | Dimensions | Representative bytes |
+| --- | ---: | ---: |
+| No `size` | 1920×1280 | 1,521,260 |
+| `size=thumb` | 160×120 | 7,728 |
+| `size=view` | 720×480 | 54,247 |
+| `size=full` | 1920×1280 | 1,521,260 |
+
+Exact byte counts vary by image. Record response status, `Content-Type`, byte
+count, and decoded pixel dimensions—not image contents—in diagnostics.
 
 Proposed use:
 
@@ -169,6 +193,11 @@ Strong cross-model evidence shows these fields:
 | `cameraModel` | Camera model |
 | `latlng` | Optional location; treat as private and do not display by default |
 | `errCode`, `errMsg` | API result status |
+
+All fields in this table were present on the tested K-1. A representative
+response identified `cameraModel` as `PENTAX K-1`, used integer orientation
+`1`, returned `captured: true`, and supplied aperture, shutter, ISO,
+compensation, and timestamp. The tested photo had an empty location value.
 
 Metadata should be fetched lazily or in a bounded queue after listing. A scan
 must remain fast and must not launch one unbounded request per image.
@@ -224,14 +253,24 @@ Existing Pentax clients treat this response as an MJPEG stream. They start live
 view by opening the URL and stop it by closing the stream. No periodic polling
 is required while live view is closed.
 
+Verified on the user's K-1:
+
+- Response type is `multipart/x-mixed-replace` with boundary
+  `--boundarydonotcross`.
+- Each part contains `Content-type: image/jpg` followed by a JPEG frame.
+- Frames are 720×480; a short sample produced roughly ten frames per second.
+- Closing/cancelling the HTTP response stops the client stream cleanly.
+- `/v1/props/liveview` continued reporting `liveState: idle` while streaming,
+  so that property is not a reliable indicator of an active client stream.
+
 Desired `k1gal` behavior:
 
 1. User explicitly opens **Live**.
 2. Bind the request to camera Wi-Fi.
 3. Open one streaming HTTP call.
 4. Parse multipart MJPEG boundaries and decode only the newest complete JPEG.
-5. Render the latest frame; discard stale queued frames instead of building
-   latency.
+5. Render the latest frame; discard stale sessions instead of allowing an old
+   stream to overwrite a newly opened one.
 6. Close and cancel the HTTP call when the user closes Live, backgrounds the
    app, loses Wi-Fi, or navigates away.
 7. Return to the existing cached gallery without a rescan.

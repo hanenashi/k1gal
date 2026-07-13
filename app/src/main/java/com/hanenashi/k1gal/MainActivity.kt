@@ -3,6 +3,8 @@ package com.hanenashi.k1gal
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.net.ConnectivityManager
 import android.net.Uri
@@ -70,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -82,9 +85,12 @@ import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Call
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.Inet4Address
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -119,8 +125,14 @@ data class PhotoItem(
     val dir: String,
     val jpg: String,
     val raw: String?,
-    val cacheFile: File?,
+    val thumbFile: File?,
+    val viewFile: File?,
     val takenAt: String?,
+    val av: String? = null,
+    val tv: String? = null,
+    val sv: String? = null,
+    val xv: String? = null,
+    val orientation: Int? = null,
     val loading: Boolean = false,
 )
 
@@ -128,6 +140,9 @@ class MainActivity : ComponentActivity() {
     private val client = OkHttpClient.Builder()
         .connectTimeout(2, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
+        .build()
+    private val liveClient = client.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     private val photos = mutableStateListOf<PhotoItem>()
@@ -139,7 +154,15 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     private var viewerIndex by mutableStateOf<Int?>(null)
     private var viewerLoadingLabel by mutableStateOf<String?>(null)
+    private var liveViewVisible by mutableStateOf(false)
+    private var liveFrame by mutableStateOf<Bitmap?>(null)
+    private var liveStatus by mutableStateOf("Live view stopped.")
     private var suppressViewerOpenUntilMs = 0L
+
+    @Volatile
+    private var liveViewCall: Call? = null
+    @Volatile
+    private var liveViewSession = 0
 
     @Volatile
     private var cancelRequested = false
@@ -161,6 +184,9 @@ class MainActivity : ComponentActivity() {
                 busy = busy,
                 viewerIndex = viewerIndex,
                 viewerLoadingLabel = viewerLoadingLabel,
+                liveViewVisible = liveViewVisible,
+                liveFrame = liveFrame,
+                liveStatus = liveStatus,
                 onScan = { scanListOnly() },
                 onPreviewAll = { previewAll() },
                 onStop = { stopWork() },
@@ -174,6 +200,8 @@ class MainActivity : ComponentActivity() {
                 onCloseViewer = { closeViewer() },
                 onViewerPrev = { openAdjacentPhoto(-1) },
                 onViewerNext = { openAdjacentPhoto(1) },
+                onOpenLiveView = { openLiveView() },
+                onCloseLiveView = { closeLiveView() },
                 onToggleSelect = { toggleSelection(it) },
                 onOpenGithub = { openGithub() },
             )
@@ -183,6 +211,11 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemNavigation()
+    }
+
+    override fun onStop() {
+        closeLiveView()
+        super.onStop()
     }
 
     private fun hideSystemNavigation() {
@@ -204,7 +237,7 @@ class MainActivity : ComponentActivity() {
                 photos.clear()
                 selected.clear()
                 photos.addAll(listed)
-                status = "Listed ${listed.size} JPEGs. Tap a card to fetch one preview, or Preview all."
+                status = "Listed ${listed.size} JPEGs. Tap a card to fetch its thumbnail, or use All."
             }
         }
     }
@@ -215,14 +248,14 @@ class MainActivity : ComponentActivity() {
             status = "Scan first to list camera files."
             return
         }
-        startWork("Caching previews...") { ip, sd ->
+        startWork("Caching thumbnails...") { ip, sd ->
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
                 runOnUiThread { status = "Caching ${index + 1}/${targets.size}: ${photo.jpg}" }
-                ensurePreviewCached(ip, sd, photo)
+                ensureThumbnailCached(ip, sd, photo)
             }
             runOnUiThread {
-                status = if (cancelRequested) "Stopped preview caching." else "Cached available previews."
+                status = if (cancelRequested) "Stopped thumbnail caching." else "Cached available thumbnails."
             }
         }
     }
@@ -230,13 +263,19 @@ class MainActivity : ComponentActivity() {
     private fun openPhoto(photo: PhotoItem) {
         val index = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
         if (index < 0) return
-        val cached = photos[index].cacheFile
-        if (cached != null && cached.exists() && cached.length() > 0L) {
+        val current = photos[index]
+        val view = current.viewFile
+        if (view != null && view.exists() && view.length() > 0L) {
             if (!canOpenViewer()) return
             viewerIndex = index
             return
         }
-        fetchPreviewAt(index, openAfterFetch = false)
+        val thumb = current.thumbFile
+        if (thumb == null || !thumb.exists() || thumb.length() == 0L) {
+            fetchThumbnailAt(index)
+        } else {
+            fetchViewAt(index, openAfterFetch = true)
+        }
     }
 
     private fun closeViewer() {
@@ -249,19 +288,27 @@ class MainActivity : ComponentActivity() {
 
     private fun openPhotoAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
-        val cached = photos[index].cacheFile
+        val cached = photos[index].viewFile
         if (cached != null && cached.exists() && cached.length() > 0L) {
             viewerIndex = index
             return
         }
         viewerLoadingLabel = "Loading ${photo.displayName()}..."
-        fetchPreviewAt(index, openAfterFetch = true)
+        fetchViewAt(index, openAfterFetch = true)
     }
 
-    private fun fetchPreviewAt(index: Int, openAfterFetch: Boolean) {
+    private fun fetchThumbnailAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
-        startWork("Fetching preview: ${photo.jpg}") { ip, sd ->
-            val cachedPhoto = ensurePreviewCached(ip, sd, photo)
+        startWork("Fetching thumbnail: ${photo.jpg}") { ip, sd ->
+            ensureThumbnailCached(ip, sd, photo)
+            runOnUiThread { status = "Thumbnail cached. Tap again to open ${photo.displayName()}." }
+        }
+    }
+
+    private fun fetchViewAt(index: Int, openAfterFetch: Boolean) {
+        val photo = photos.getOrNull(index) ?: return
+        startWork("Fetching view: ${photo.jpg}") { ip, sd ->
+            val cachedPhoto = ensureViewCached(ip, sd, photo)
             runOnUiThread {
                 val freshIndex = photos.indexOfFirst { it.dir == cachedPhoto.dir && it.jpg == cachedPhoto.jpg }
                 if (openAfterFetch && freshIndex >= 0 && !cancelRequested) viewerIndex = freshIndex
@@ -273,6 +320,80 @@ class MainActivity : ComponentActivity() {
         val current = viewerIndex ?: return
         val target = (current + delta).coerceIn(0, photos.lastIndex)
         if (target != current) openPhotoAt(target)
+    }
+
+    private fun openLiveView() {
+        if (liveViewVisible) return
+        viewerIndex = null
+        liveFrame = null
+        liveStatus = "Opening K-1 live view..."
+        liveViewVisible = true
+        val session = ++liveViewSession
+
+        val ip = cameraIp.trim()
+        thread(name = "k1gal-live") {
+            val request = Request.Builder().url("http://$ip/v1/liveview").build()
+            val call = liveClient.newCall(request)
+            try {
+                bindProcessToWifi()
+                if (!liveViewVisible || session != liveViewSession) return@thread
+                liveViewCall = call
+                call.execute().use { response ->
+                    if (!response.isSuccessful) error("HTTP ${response.code}")
+                    val body = response.body ?: error("Empty live-view stream")
+                    runOnUiThread { liveStatus = "Live" }
+                    readMjpegFrames(body.byteStream(), call) { bitmap ->
+                        runOnUiThread {
+                            if (liveViewVisible && session == liveViewSession && liveViewCall === call) liveFrame = bitmap
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (liveViewVisible) {
+                    runOnUiThread { liveStatus = "Live view failed: ${e.message ?: "unknown error"}" }
+                }
+            } finally {
+                if (liveViewCall === call) liveViewCall = null
+            }
+        }
+    }
+
+    private fun closeLiveView() {
+        liveViewVisible = false
+        liveViewSession += 1
+        liveViewCall?.cancel()
+        liveViewCall = null
+        liveFrame = null
+        liveStatus = "Live view stopped."
+    }
+
+    private fun readMjpegFrames(input: InputStream, call: Call, onFrame: (Bitmap) -> Unit) {
+        val frame = ByteArrayOutputStream(128 * 1024)
+        var previous = -1
+        var collecting = false
+        while (liveViewVisible && liveViewCall === call) {
+            val current = input.read()
+            if (current < 0) break
+            if (!collecting) {
+                if (previous == 0xff && current == 0xd8) {
+                    collecting = true
+                    frame.reset()
+                    frame.write(0xff)
+                    frame.write(0xd8)
+                }
+            } else {
+                frame.write(current)
+                if (previous == 0xff && current == 0xd9) {
+                    val bytes = frame.toByteArray()
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let(onFrame)
+                    collecting = false
+                } else if (frame.size() > 4 * 1024 * 1024) {
+                    collecting = false
+                    frame.reset()
+                }
+            }
+            previous = current
+        }
     }
 
     private fun startWork(initialStatus: String, block: (ip: String, sd: String) -> Unit) {
@@ -327,14 +448,16 @@ class MainActivity : ComponentActivity() {
                 .associateBy { it.substringBeforeLast(".").uppercase() }
 
             files.filter { it.endsWith(".JPG", ignoreCase = true) }.forEach { jpg ->
-                val cached = cachedPreviewFile(sd, dirName, jpg).takeIf { it.exists() && it.length() > 0L }
+                val thumb = cachedPhotoFile(sd, dirName, jpg, "thumbs").takeIf { it.exists() && it.length() > 0L }
+                val view = cachedPhotoFile(sd, dirName, jpg, "views").takeIf { it.exists() && it.length() > 0L }
                 out.add(
                     PhotoItem(
                         dir = dirName,
                         jpg = jpg,
                         raw = rawByStem[jpg.substringBeforeLast(".").uppercase()],
-                        cacheFile = cached,
-                        takenAt = cached?.readTakenAt(),
+                        thumbFile = thumb,
+                        viewFile = view,
+                        takenAt = null,
                     )
                 )
             }
@@ -343,23 +466,61 @@ class MainActivity : ComponentActivity() {
         return out.sortedWith(compareBy({ it.dir }, { numberNearExtension(it.jpg) }, { it.jpg }))
     }
 
-    private fun ensurePreviewCached(ip: String, sd: String, photo: PhotoItem): PhotoItem {
+    private fun ensureThumbnailCached(ip: String, sd: String, photo: PhotoItem): PhotoItem {
         val currentIndex = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
         if (currentIndex >= 0) runOnUiThread { photos[currentIndex] = photos[currentIndex].copy(loading = true) }
 
-        val file = cachedPreviewFile(sd, photo.dir, photo.jpg)
+        val file = cachedPhotoFile(sd, photo.dir, photo.jpg, "thumbs")
         if (!file.exists() || file.length() == 0L) {
-            downloadToFile(ip, sd, photo.dir, photo.jpg, file)
+            downloadToFile(ip, sd, photo.dir, photo.jpg, file, "thumb")
         }
-        val updated = photo.copy(cacheFile = file, takenAt = file.readTakenAt(), loading = false)
+        val metadata = fetchPhotoInfo(ip, sd, photo)
+        val updated = photo.copy(
+            thumbFile = file,
+            takenAt = metadata.optString("datetime").takeIf { it.isNotBlank() },
+            av = metadata.optString("av").takeIf { it.isNotBlank() },
+            tv = metadata.optString("tv").takeIf { it.isNotBlank() },
+            sv = metadata.optString("sv").takeIf { it.isNotBlank() },
+            xv = metadata.optString("xv").takeIf { it.isNotBlank() },
+            orientation = metadata.optInt("orientation").takeIf { metadata.has("orientation") },
+            loading = false,
+        )
         val updatedIndex = photos.indexOfFirst { it.dir == updated.dir && it.jpg == updated.jpg }
         if (updatedIndex >= 0) runOnUiThread { photos[updatedIndex] = updated }
         return updated
     }
 
-    private fun downloadToFile(ip: String, sd: String, dir: String, fileName: String, target: File) {
+    private fun ensureViewCached(ip: String, sd: String, photo: PhotoItem): PhotoItem {
+        val currentIndex = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
+        if (currentIndex >= 0) runOnUiThread { photos[currentIndex] = photos[currentIndex].copy(loading = true) }
+
+        val file = cachedPhotoFile(sd, photo.dir, photo.jpg, "views")
+        if (!file.exists() || file.length() == 0L) {
+            downloadToFile(ip, sd, photo.dir, photo.jpg, file, "view")
+        }
+        var updated = photos.getOrNull(currentIndex) ?: photo
+        if (updated.takenAt == null) updated = ensureThumbnailCached(ip, sd, updated)
+        updated = updated.copy(viewFile = file, loading = false)
+        val updatedIndex = photos.indexOfFirst { it.dir == updated.dir && it.jpg == updated.jpg }
+        if (updatedIndex >= 0) runOnUiThread { photos[updatedIndex] = updated }
+        return updated
+    }
+
+    private fun fetchPhotoInfo(ip: String, sd: String, photo: PhotoItem): JSONObject {
+        val url = "http://$ip/v1/photos/${urlPart(photo.dir)}/${urlPart(photo.jpg)}/info?storage=sd$sd"
+        return JSONObject(httpText(url))
+    }
+
+    private fun downloadToFile(
+        ip: String,
+        sd: String,
+        dir: String,
+        fileName: String,
+        target: File,
+        size: String? = null,
+    ) {
         if (cancelRequested) return
-        val request = Request.Builder().url(photoUrl(ip, sd, dir, fileName)).build()
+        val request = Request.Builder().url(photoUrl(ip, sd, dir, fileName, size)).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("HTTP ${response.code} for $fileName")
             val body = response.body ?: error("Empty body for $fileName")
@@ -383,12 +544,11 @@ class MainActivity : ComponentActivity() {
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
                 runOnUiThread { status = "JPEG ${index + 1}/${targets.size}: ${photo.jpg}" }
-                val cachedPhoto = ensurePreviewCached(ip, sd, photo)
-                val source = cachedPhoto.cacheFile
-                if (source != null && source.exists() && source.length() > 0L) {
-                    saveDownload(cachedPhoto.jpg, source, "image/jpeg")
-                    saved += 1
-                }
+                val temp = File(cacheDir, "downloads/${photo.dir}_${photo.jpg}.part").apply { parentFile?.mkdirs() }
+                downloadToFile(ip, sd, photo.dir, photo.jpg, temp, "full")
+                saveDownload(photo.jpg, temp, "image/jpeg")
+                temp.delete()
+                saved += 1
             }
             runOnUiThread { status = "Saved $saved JPEG file(s) to Download/k1gal." }
         }
@@ -446,22 +606,39 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearCache() {
+        File(cacheDir, "photos").deleteRecursively()
         File(cacheDir, "previews").deleteRecursively()
-        photos.replaceAll { it.copy(cacheFile = null, takenAt = null, loading = false) }
+        photos.replaceAll {
+            it.copy(
+                thumbFile = null,
+                viewFile = null,
+                takenAt = null,
+                av = null,
+                tv = null,
+                sv = null,
+                xv = null,
+                orientation = null,
+                loading = false,
+            )
+        }
         selected.clear()
         viewerIndex = null
         status = "Preview cache cleared."
     }
 
     private fun loadExistingCache() {
-        File(cacheDir, "previews").walkTopDown()
+        File(cacheDir, "photos/views").walkTopDown()
             .filter { it.isFile && it.extension.equals("JPG", ignoreCase = true) }
             .sortedBy { it.name }
             .forEach { file ->
-                val parts = file.name.split("_", limit = 2)
-                if (parts.size == 2) {
-                    photos.add(PhotoItem(parts[0], parts[1], null, file, file.readTakenAt()))
-                }
+                val parent = file.parentFile ?: return@forEach
+                val legacy = parent.name.startsWith("sd")
+                val legacyMarker = file.name.indexOf("_IMGP")
+                val dir = if (legacy && legacyMarker > 0) file.name.substring(0, legacyMarker) else parent.name
+                val jpg = if (legacy && legacyMarker > 0) file.name.substring(legacyMarker + 1) else file.name
+                val sd = if (legacy) parent.name.removePrefix("sd") else parent.parentFile?.name?.removePrefix("sd") ?: "1"
+                val thumb = cachedPhotoFile(sd, dir, jpg, "thumbs").takeIf { it.exists() && it.length() > 0L }
+                photos.add(PhotoItem(dir, jpg, null, thumb, file, file.readTakenAt()))
             }
         if (photos.isNotEmpty()) status = "Loaded ${photos.size} cached previews. Scan to refresh file list."
     }
@@ -520,14 +697,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun photoUrl(ip: String, sd: String, dir: String, fileName: String): String {
+    private fun photoUrl(ip: String, sd: String, dir: String, fileName: String, size: String? = null): String {
         val encodedDir = urlPart(dir)
         val encodedFile = urlPart(fileName)
-        return "http://$ip/v1/photos/$encodedDir/$encodedFile?storage=sd$sd"
+        val sizeQuery = size?.let { "size=${urlPart(it)}&" }.orEmpty()
+        return "http://$ip/v1/photos/$encodedDir/$encodedFile?${sizeQuery}storage=sd$sd"
     }
 
-    private fun cachedPreviewFile(sd: String, dir: String, jpg: String): File =
-        File(File(cacheDir, "previews/sd$sd").apply { mkdirs() }, "${dir}_${jpg}".replace(Regex("[^A-Za-z0-9._-]"), "_"))
+    private fun cachedPhotoFile(sd: String, dir: String, jpg: String, kind: String): File =
+        File(
+            File(
+                File(cacheDir, "photos/$kind/sd$sd"),
+                dir.replace(Regex("[^A-Za-z0-9._-]"), "_"),
+            ).apply { mkdirs() },
+            jpg.replace(Regex("[^A-Za-z0-9._-]"), "_"),
+        )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -543,6 +727,9 @@ fun K1GalApp(
     busy: Boolean,
     viewerIndex: Int?,
     viewerLoadingLabel: String?,
+    liveViewVisible: Boolean,
+    liveFrame: Bitmap?,
+    liveStatus: String,
     onScan: () -> Unit,
     onPreviewAll: () -> Unit,
     onStop: () -> Unit,
@@ -553,6 +740,8 @@ fun K1GalApp(
     onCloseViewer: () -> Unit,
     onViewerPrev: () -> Unit,
     onViewerNext: () -> Unit,
+    onOpenLiveView: () -> Unit,
+    onCloseLiveView: () -> Unit,
     onToggleSelect: (PhotoItem) -> Unit,
     onOpenGithub: () -> Unit,
 ) {
@@ -573,6 +762,7 @@ fun K1GalApp(
                         onStop = onStop,
                         onClear = onClear,
                         onDownloadSelected = { downloadChoiceOpen = true },
+                        onOpenLiveView = onOpenLiveView,
                     )
                     if (settingsOpen) {
                         SettingsPanel(
@@ -622,6 +812,13 @@ fun K1GalApp(
                         )
                     }
                 }
+                if (liveViewVisible) {
+                    LiveViewer(
+                        frame = liveFrame,
+                        status = liveStatus,
+                        onClose = onCloseLiveView,
+                    )
+                }
                 if (downloadChoiceOpen) {
                     DownloadChoiceDialog(
                         onDismiss = { downloadChoiceOpen = false },
@@ -669,6 +866,7 @@ fun ActionBar(
     onStop: () -> Unit,
     onClear: () -> Unit,
     onDownloadSelected: () -> Unit,
+    onOpenLiveView: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -682,6 +880,7 @@ fun ActionBar(
         CompactButton("Set", onSettings)
         CompactButton(if (busy) "Stop" else "Scan", if (busy) onStop else onScan)
         CompactButton("All", onPreviewAll, enabled = !busy && canPreviewAll)
+        CompactButton("Live", onOpenLiveView, enabled = !busy)
         CompactButton("Down", onDownloadSelected, enabled = !busy && selectedCount > 0)
         CompactButton("Clear", onClear, enabled = !busy)
     }
@@ -805,7 +1004,7 @@ fun PhotoCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Box {
-            val cacheFile = photo.cacheFile
+            val cacheFile = photo.thumbFile ?: photo.viewFile
             if (cacheFile != null && cacheFile.exists()) {
                 Image(
                     painter = rememberAsyncImagePainter(cacheFile),
@@ -843,6 +1042,53 @@ fun PhotoCard(
             color = Color(0xffffb15c),
             style = MaterialTheme.typography.labelSmall,
         )
+    }
+}
+
+@Composable
+fun LiveViewer(
+    frame: Bitmap?,
+    status: String,
+    onClose: () -> Unit,
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (frame != null) {
+            Image(
+                bitmap = frame.asImageBitmap(),
+                contentDescription = "K-1 live view",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            CircularProgressIndicator(color = Color(0xffff8a24))
+        }
+        Text(
+            status,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 28.dp)
+                .background(Color(0xcc160d07), RoundedCornerShape(8.dp))
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            color = Color(0xffffb15c),
+        )
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 16.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color(0x99160d07),
+                contentColor = Color(0xffffb15c),
+            ),
+        ) {
+            Text("Close")
+        }
     }
 }
 
@@ -959,7 +1205,7 @@ fun Viewer(
             }
 
             Image(
-                painter = rememberAsyncImagePainter(photo.cacheFile),
+                painter = rememberAsyncImagePainter(photo.viewFile),
                 contentDescription = photo.jpg,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -988,7 +1234,8 @@ fun Viewer(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(photo.takenAt ?: photo.dir, color = Color(0xffffb15c))
+            Text(photo.exposureMetaText(), color = Color(0xffffb15c))
+            Text(photo.takenAt ?: photo.dir, color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
         }
         OutlinedButton(
             onClick = onClose,
@@ -1101,7 +1348,30 @@ private fun String.isRawName(): Boolean =
 
 private fun PhotoItem.displayName(): String = jpg.substringBeforeLast(".")
 
-private fun PhotoItem.cardMetaText(): String = takenAt ?: if (raw != null) "RAW" else "JPG"
+private fun PhotoItem.cardMetaText(): String {
+    return exposureMetaText().ifBlank { takenAt ?: if (raw != null) "RAW" else "JPG" }
+}
+
+private fun PhotoItem.exposureMetaText(): String =
+    listOfNotNull(
+        av?.let { "f/$it" },
+        tv?.let { formatShutter(it) },
+        sv?.let { "ISO $it" },
+        xv?.takeUnless { it == "0" || it == "0.0" }?.let { "EV $it" },
+    ).joinToString("  ")
+
+private fun formatShutter(value: String): String {
+    val parts = value.split(".", limit = 2)
+    if (parts.size != 2) return value
+    val numerator = parts[0].toIntOrNull() ?: return value
+    val denominator = parts[1].toIntOrNull() ?: return value
+    if (denominator == 0) return value
+    return when {
+        numerator == 1 -> "1/$denominator"
+        denominator == 1 -> "$numerator″"
+        else -> "${numerator.toDouble() / denominator}″"
+    }
+}
 
 private fun File.readTakenAt(): String? = try {
     formatExifDateTime(

@@ -55,42 +55,48 @@ live in [knowledgebase.md](knowledgebase.md). The camera's own `/v1/apis`
 response is authoritative; features stay capability-driven rather than
 assuming every Pentax firmware behaves identically.
 
-### 1. Learn the connected K-1 safely
+Current development status: K-1 capability discovery is verified on firmware
+2.51; server-sized thumbnails, viewer images, photo metadata, and explicit
+open/close live view are implemented and tested on a Pixel 10a. Remote shutter
+and writable camera controls remain future work.
 
-- Add a developer diagnostic that performs GET-only capability discovery.
-- Capture a sanitized `/v1/apis` response and allowlisted camera properties.
-- Probe `thumb`, `view`, and `full` photo sizes, recording byte and pixel sizes.
-- Verify per-photo `/info` fields on both SD slots without logging identifiers,
+### 1. Learn the connected K-1 safely — verified
+
+- [x] Capture a sanitized `/v1/apis` response and allowlisted camera properties.
+- [x] Probe `thumb`, `view`, and `full` photo sizes, recording byte and pixel sizes.
+- [x] Verify per-photo `/info` fields on both SD slots without logging identifiers,
   Wi-Fi credentials, or location.
+- [ ] Add an in-app developer diagnostic if future model/firmware testing needs it.
 
-### 2. Faster gallery thumbnails
+### 2. Faster gallery thumbnails — completed
 
-- Request server-generated `size=thumb` images for cards.
-- Request `size=view` only when opening the fullscreen viewer.
-- Keep thumbnail and viewer caches separate so a low-resolution file never
+- [x] Request server-generated `size=thumb` images for cards.
+- [x] Request `size=view` only when opening the fullscreen viewer.
+- [x] Keep thumbnail and viewer caches separate so a low-resolution file never
   masquerades as a fullscreen preview.
-- Preserve lazy loading, stop/cancel behavior, and explicit full JPEG/RAW
+- [x] Preserve lazy loading, stop/cancel behavior, and explicit full JPEG/RAW
   downloads.
 
-### 3. Richer photo metadata
+### 3. Richer photo metadata — completed
 
-- Read capture time, aperture, shutter speed, ISO, exposure compensation, and
+- [x] Read capture time, aperture, shutter speed, ISO, exposure compensation, and
   orientation from `/v1/photos/{dir}/{file}/info`.
-- Fetch metadata lazily with bounded concurrency so scanning stays quick.
-- Add concise metadata to cards and the fullscreen overlay.
-- Treat location metadata as private and hide it by default.
+- [x] Fetch metadata lazily with bounded work so scanning stays quick.
+- [x] Add concise metadata to cards and the fullscreen overlay.
+- [x] Treat location metadata as private and hide it by default.
 
-### 4. On-demand live view
+### 4. On-demand live view — core completed
 
-- Add a **Live** action that opens `/v1/liveview` only when requested.
-- Decode the MJPEG stream off the main thread and display only the freshest
-  frame.
-- Close the stream immediately when Live closes, the app backgrounds, Wi-Fi is
+- [x] Add a **Live** action that opens `/v1/liveview` only when requested.
+- [x] Decode the MJPEG stream off the main thread and reject stale-session
+  frames.
+- [x] Close the stream immediately when Live closes, the app backgrounds, Wi-Fi is
   lost, or the user leaves the screen.
-- Test repeated open/close, rotation, reconnects, heat, battery use, and memory
-  pressure. Live view must never start automatically.
+- [x] Verify repeated open/close on the physical K-1 and Pixel. Live view never
+  starts automatically.
+- [ ] Run longer rotation, reconnect, heat, battery, and memory-pressure tests.
 
-### 5. Remote shutter
+### 5. Remote shutter — next
 
 - Add a deliberate shutter button inside live view.
 - Verify `POST /v1/camera/shoot` and autofocus values on the actual K-1.
@@ -99,7 +105,7 @@ assuming every Pentax firmware behaves identically.
   thumbnail to the gallery.
 - Report errors without automatically retrying a shutter action.
 
-### 6. Optional camera controls
+### 6. Optional camera controls — later
 
 - Consider aperture, shutter, ISO, exposure compensation, and white balance
   only after viewing and capture are reliable.
