@@ -109,7 +109,20 @@ controls remain future work.
   thumbnail to the gallery.
 - [x] Report errors without automatically retrying a shutter action.
 
-### 6. Optional camera controls — next
+### 6. Split the app into manageable components — next
+
+- Extract the K-1 API client, live-view stream, and guarded shutter workflow
+  from `MainActivity.kt` into a `camera` package.
+- Move gallery listing, metadata, and preview caching into `gallery`, and move
+  MediaStore saving and byte-progress handling into `download`.
+- Split gallery, fullscreen viewer, and live-view composables into focused UI
+  files, with a view model owning application state and user actions.
+- Keep `MainActivity` limited to Android lifecycle/setup and the Compose entry
+  point, preserving existing behavior throughout the refactor.
+- Start with packages and source files; defer separate Gradle modules until the
+  codebase is large enough for their added build and maintenance overhead.
+
+### 7. Optional camera controls — after the refactor
 
 - Consider aperture, shutter, ISO, exposure compensation, and white balance
   only after viewing and capture are reliable.
