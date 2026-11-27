@@ -17,9 +17,9 @@ The current direction is good because it prioritizes reliable viewing and captur
 - Privacy-aware diagnostics and metadata handling. Wi-Fi keys, SSID, serial number, MAC address, and location data must remain redacted or hidden by default.
 - Deliberate RAW/JPEG downloads with byte progress and validation before publishing files to MediaStore.
 
-## Immediate priority: modularization
+## Completed: modularization
 
-The architectural refactor should happen before optional exposure controls. `MainActivity.kt` currently owns too many responsibilities:
+The architectural refactor moved app state into `MainViewModel` and split the camera, gallery, downloads, and Compose screens into source packages. `MainActivity.kt` previously owned all of these responsibilities:
 
 - Android lifecycle and setup
 - network binding
