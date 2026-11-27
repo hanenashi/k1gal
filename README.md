@@ -102,7 +102,8 @@ controls remain future work.
 ### 5. Remote shutter — completed
 
 - [x] Add a deliberate shutter button inside live view.
-- [x] Verify `POST /v1/camera/shoot` with `af=auto` on the actual K-1.
+- [x] Verify `POST /v1/camera/shoot` on the actual K-1, using `af=auto` in
+  autofocus mode and `af=off` for manual-focus and legacy lenses.
 - [x] Refuse non-single drive mode, prevent duplicate capture requests, and use
   a bounded timeout.
 - [x] Poll `/v1/photos/latest/info` for a newly captured file, then add its

@@ -319,6 +319,10 @@ Verified on the user's K-1 with drive mode set to `single`:
   under the same stem, so clients should normalize either filename to the JPEG
   gallery identity.
 - The app fetched the new thumbnail and kept live view active after capture.
+- With a legacy/manual-focus lens, the K-1 reported `focusMode: mf` and rejected
+  `af=auto` with error 412 (`Precondition Failed`). Sending `af=off` succeeded
+  and captured normally. Clients should select the autofocus request from
+  `/v1/props/lens` rather than assuming autofocus is available.
 
 Other autofocus values reported by clients are `on` and `off`, but they remain
 unverified on our K-1. Older code sent the same plain body with a nonstandard
@@ -330,7 +334,8 @@ Proposed capture flow:
 1. Require an explicit shutter tap; never fire on entering Live.
 2. Disable duplicate shutter actions while capture is active.
 3. Snapshot `/v1/photos/latest/info`.
-4. POST `af=auto` to `/v1/camera/shoot`.
+4. Read `/v1/props/lens`, then POST `af=auto` in autofocus mode or `af=off`
+   when `focusMode` is `mf`/only the `manual` focus setting is available.
 5. Poll `latest/info` at a modest interval until `captured` is true and the
    `dir/file` changes, with a bounded timeout.
 6. Update the gallery and optionally fetch the new `thumb`/`view` image.

@@ -456,21 +456,33 @@ class MainActivity : ComponentActivity() {
                 if (camera.optString("shootMode") != "single") {
                     error("Set the K-1 drive mode to single")
                 }
+                val lens = JSONObject(httpText("http://$ip/v1/props/lens"))
+                val manualFocus = lens.optString("focusMode").equals("mf", ignoreCase = true) ||
+                    lens.optJSONArray("focusSettingList")
+                        .orEmpty()
+                        .toStringList()
+                        .let { it.isNotEmpty() && it.all { setting -> setting.equals("manual", ignoreCase = true) } }
+                val autofocus = if (manualFocus) "off" else "auto"
 
                 val latestUrl = "http://$ip/v1/photos/latest/info?storage=sd$sd"
                 val before = JSONObject(httpText(latestUrl))
                 val beforeIdentity = "${before.optString("dir")}/${before.optString("file")}"
-                runOnUiThread { captureStatus = "Focusing..." }
+                runOnUiThread {
+                    captureStatus = if (manualFocus) "Capturing (manual focus)..." else "Focusing..."
+                }
 
                 val request = Request.Builder()
                     .url("http://$ip/v1/camera/shoot")
-                    .post(FormBody.Builder().add("af", "auto").build())
+                    .post(FormBody.Builder().add("af", autofocus).build())
                     .build()
                 val shoot = client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) error("Shutter HTTP ${response.code}")
                     JSONObject(response.body?.string() ?: error("Empty shutter response"))
                 }
                 if (shoot.optInt("errCode") != 200) {
+                    if (shoot.optInt("errCode") == 412) {
+                        error("Camera precondition failed; check focus and drive modes")
+                    }
                     error(shoot.optString("errMsg", "Camera rejected shutter"))
                 }
 
