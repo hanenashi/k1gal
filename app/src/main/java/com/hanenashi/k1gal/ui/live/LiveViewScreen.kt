@@ -6,12 +6,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +23,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -42,14 +48,16 @@ internal fun LiveViewer(
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else {
+        } else if (status.startsWith("Opening")) {
             CircularProgressIndicator(color = Color(0xffff8a24))
         }
         Text(
             captureStatus ?: status,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(bottom = 28.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite }
                 .background(Color(0xcc160d07), RoundedCornerShape(8.dp))
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             color = Color(0xffffb15c),
@@ -60,7 +68,8 @@ internal fun LiveViewer(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(top = 12.dp, end = 16.dp),
+                .padding(top = 12.dp, end = 16.dp)
+                .heightIn(min = 48.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
             shape = RoundedCornerShape(18.dp),
             colors = ButtonDefaults.outlinedButtonColors(
@@ -75,11 +84,13 @@ internal fun LiveViewer(
             enabled = !captureBusy && frame != null,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 110.dp),
+                .navigationBarsPadding()
+                .padding(bottom = 110.dp)
+                .heightIn(min = 48.dp),
             shape = RoundedCornerShape(24.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xffd65a19),
-                contentColor = Color.White,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
         ) {
             Text(if (captureBusy) "Capturing..." else "Shutter")

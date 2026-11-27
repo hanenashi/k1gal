@@ -4,13 +4,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 
 internal val K1DarkColors = darkColorScheme(
-    primary = Color(0xffff8a24),
+    primary = Color(0xffffb56d),
     onPrimary = Color(0xff180900),
     secondary = Color(0xffffb15c),
     onSecondary = Color(0xff180900),
-    surface = Color(0xff0d0b09),
-    onSurface = Color(0xfffff1e3),
-    surfaceVariant = Color(0xff241913),
-    onSurfaceVariant = Color(0xffffc08a),
-    outline = Color(0xffb8662c),
+    secondaryContainer = Color(0xff51351f),
+    onSecondaryContainer = Color(0xffffdbc0),
+    background = Color(0xff111213),
+    onBackground = Color(0xfff5f1ec),
+    surface = Color(0xff191a1c),
+    surfaceContainerHigh = Color(0xff28292b),
+    onSurface = Color(0xfff5f1ec),
+    surfaceVariant = Color(0xff252629),
+    onSurfaceVariant = Color(0xffd6cec5),
+    outline = Color(0xff9b9187),
+    outlineVariant = Color(0xff45413e),
 )

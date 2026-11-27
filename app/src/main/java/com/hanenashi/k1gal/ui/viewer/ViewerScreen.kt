@@ -1,5 +1,7 @@
 package com.hanenashi.k1gal.ui.viewer
 
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -8,12 +10,15 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -25,22 +30,28 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
@@ -51,12 +62,15 @@ import com.hanenashi.k1gal.util.formatMegabytes
 import com.hanenashi.k1gal.util.orientationRotation
 import com.hanenashi.k1gal.util.viewerTimestamp
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 private const val PREVIEW_ASPECT_RATIO = 1.5f
 
 @Composable
 internal fun Viewer(
     photo: PhotoItem,
+    previousPhoto: PhotoItem?,
+    nextPhoto: PhotoItem?,
     index: Int,
     total: Int,
     onClose: () -> Unit,
@@ -64,34 +78,68 @@ internal fun Viewer(
     onNext: () -> Unit,
     loadingLabel: String?,
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    val pageKey = photo.dir to photo.jpg
+    var scale by remember(pageKey) { mutableFloatStateOf(1f) }
+    var offset by remember(pageKey) { mutableStateOf(Offset.Zero) }
     var imageBounds by remember { mutableStateOf<Rect?>(null) }
-    var lastTapAtMs by remember { mutableStateOf(0L) }
-    var lastTapPosition by remember { mutableStateOf(Offset.Zero) }
+    var lastTapAtMs by remember(pageKey) { mutableStateOf(0L) }
+    var lastTapPosition by remember(pageKey) { mutableStateOf(Offset.Zero) }
+    var pageOffset by remember(pageKey) { mutableFloatStateOf(0f) }
+    var settling by remember(pageKey) { mutableStateOf(false) }
+    var awaitingPage by remember(pageKey) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val canGoPrevious by rememberUpdatedState(previousPhoto != null)
+    val canGoNext by rememberUpdatedState(nextPhoto != null)
+    val isLoading by rememberUpdatedState(loadingLabel != null)
+    val goPrevious by rememberUpdatedState(onPrev)
+    val goNext by rememberUpdatedState(onNext)
+    val close by rememberUpdatedState(onClose)
+
+    LaunchedEffect(pageKey, loadingLabel, awaitingPage) {
+        if (awaitingPage && loadingLabel == null) {
+            animate(pageOffset, 0f, animationSpec = spring(stiffness = 450f)) { value, _ ->
+                pageOffset = value
+            }
+            awaitingPage = false
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(photo.jpg) {
+            .clipToBounds()
+            .pointerInput(pageKey) {
                 val tapSlop = 18.dp.toPx()
+                val swipeSlop = viewConfiguration.touchSlop
                 val doubleTapSlop = 80.dp.toPx()
-                val swipeThreshold = 44.dp.toPx()
+                val flingSpeed = 650.dp.toPx()
+                val minFlingDistance = 24.dp.toPx()
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = true)
+                    if (settling || awaitingPage || isLoading) return@awaitEachGesture
                     val startedZoomed = scale > 1.05f
                     var dragTotal = Offset.Zero
                     var maxPointers = 1
                     var transformed = false
+                    var paging = false
+                    val pageWidth = size.width.toFloat().coerceAtLeast(1f)
+                    val swipeThreshold = minOf(pageWidth * 0.22f, 120.dp.toPx())
+                    val velocity = VelocityTracker()
+                    velocity.addPosition(down.uptimeMillis, down.position)
 
                     while (true) {
                         val event = awaitPointerEvent()
+                        event.changes.firstOrNull { it.id == down.id }?.let {
+                            velocity.addPosition(it.uptimeMillis, it.position)
+                        }
                         val pressed = event.changes.filter { it.pressed }
                         if (pressed.isEmpty()) break
 
                         maxPointers = maxOf(maxPointers, pressed.size)
                         if (pressed.size >= 2) {
+                            pageOffset = 0f
+                            paging = false
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()
                             scale = (scale * zoom).coerceIn(1f, 8f)
@@ -108,7 +156,16 @@ internal fun Viewer(
                                 }
                             } else {
                                 dragTotal += pan
-                                if (dragTotal.getDistance() > tapSlop) change.consume()
+                                if (!paging) {
+                                    paging = abs(dragTotal.x) > swipeSlop &&
+                                        abs(dragTotal.x) > abs(dragTotal.y) * 1.15f
+                                }
+                                if (paging) {
+                                    val atEdge = (dragTotal.x > 0 && !canGoPrevious) || (dragTotal.x < 0 && !canGoNext)
+                                    pageOffset = (dragTotal.x * if (atEdge) 0.22f else 1f)
+                                        .coerceIn(-pageWidth, pageWidth)
+                                    change.consume()
+                                }
                             }
                         }
                     }
@@ -120,7 +177,7 @@ internal fun Viewer(
 
                     val bounds = imageBounds
                     val downInsideImage = bounds?.contains(down.position) == true
-                    val wasTap = maxPointers == 1 && !transformed && dragTotal.getDistance() <= tapSlop
+                    val wasTap = maxPointers == 1 && !transformed && !paging && dragTotal.getDistance() <= tapSlop
                     if (wasTap) {
                         val isDoubleTap = downInsideImage &&
                             down.uptimeMillis - lastTapAtMs <= 320L &&
@@ -137,66 +194,59 @@ internal fun Viewer(
                         } else {
                             lastTapAtMs = down.uptimeMillis
                             lastTapPosition = down.position
-                            if (!downInsideImage && scale <= 1f) onClose()
+                            if (!downInsideImage && scale <= 1f) close()
                         }
-                    } else if (!transformed && !startedZoomed && scale <= 1.05f) {
-                        val horizontal = abs(dragTotal.x)
-                        val vertical = abs(dragTotal.y)
-                        if (horizontal > swipeThreshold && horizontal > vertical * 1.15f) {
-                            if (dragTotal.x < 0f) onNext() else onPrev()
+                    } else if (paging && !transformed) {
+                        val speed = velocity.calculateVelocity().x
+                        val enoughDistance = abs(dragTotal.x) >= swipeThreshold
+                        val fling = abs(dragTotal.x) >= minFlingDistance && abs(speed) >= flingSpeed &&
+                            speed * dragTotal.x > 0f
+                        val direction = when {
+                            !enoughDistance && !fling -> 0
+                            dragTotal.x < 0f && canGoNext -> 1
+                            dragTotal.x > 0f && canGoPrevious -> -1
+                            else -> 0
                         }
+                        settling = true
+                        scope.launch {
+                            animate(
+                                initialValue = pageOffset,
+                                targetValue = -direction * pageWidth,
+                                animationSpec = spring(stiffness = 450f),
+                            ) { value, _ -> pageOffset = value }
+                            settling = false
+                            if (direction != 0) {
+                                awaitingPage = true
+                                if (direction > 0) goNext() else goPrevious()
+                            }
+                        }
+                    } else {
+                        pageOffset = 0f
                     }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            val portrait = photo.orientation == 6 || photo.orientation == 8
-            val displayAspectRatio = if (portrait) 1f / PREVIEW_ASPECT_RATIO else PREVIEW_ASPECT_RATIO
-            val viewportRatio = maxWidth / maxHeight
-            val displayWidth = if (viewportRatio > displayAspectRatio) {
-                maxHeight * displayAspectRatio
-            } else {
-                maxWidth
-            }
-            val displayHeight = if (viewportRatio > displayAspectRatio) {
-                maxHeight
-            } else {
-                maxWidth / displayAspectRatio
-            }
-            val rawWidth = if (portrait) displayHeight else displayWidth
-            val rawHeight = if (portrait) displayWidth else displayHeight
-
-            Box(
-                modifier = Modifier
-                    .width(displayWidth)
-                    .height(displayHeight)
-                    .onGloballyPositioned { imageBounds = it.boundsInRoot() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = rememberAsyncImagePainter(photo.viewFile),
-                    contentDescription = photo.jpg,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .width(rawWidth)
-                        .height(rawHeight)
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
-                            translationY = offset.y,
-                            rotationZ = orientationRotation(photo.orientation),
-                        ),
-                )
-            }
+        val neighbor = if (pageOffset < 0f) nextPhoto else previousPhoto
+        if (pageOffset != 0f && neighbor != null) {
+            val side = if (pageOffset < 0f) 1f else -1f
+            ViewerImage(
+                photo = neighbor,
+                modifier = Modifier.graphicsLayer { translationX = pageOffset + side * size.width },
+                preview = true,
+            )
         }
+        ViewerImage(
+            photo = photo,
+            modifier = Modifier.graphicsLayer { translationX = pageOffset },
+            scale = scale,
+            offset = offset,
+            onBounds = { imageBounds = it },
+        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 18.dp)
                 .background(Color(0xcc160d07), RoundedCornerShape(8.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -208,27 +258,25 @@ internal fun Viewer(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(photo.exposureMetaText(), color = Color(0xffffb15c))
+            val exposure = photo.exposureMetaText()
+            if (exposure.isNotBlank()) Text(exposure, color = Color(0xffffb15c))
             Text(photo.viewerTimestamp(), color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
             photo.raw?.let { raw ->
                 val size = photo.rawSizeBytes?.let(::formatMegabytes) ?: "checking size..."
                 Text("$raw  $size", color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
             }
         }
-        OutlinedButton(
-            onClick = onClose,
+        Row(
             modifier = Modifier
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 12.dp, end = 16.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = Color(0x99160d07),
-                contentColor = Color(0xffffb15c),
-            ),
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text("Close")
+            val canNavigate = loadingLabel == null && !settling && !awaitingPage
+            ViewerButton("Previous", onPrev, enabled = index > 0 && canNavigate)
+            ViewerButton("Next", onNext, enabled = index + 1 < total && canNavigate)
+            ViewerButton("Close", onClose)
         }
         loadingLabel?.let { label ->
             Row(
@@ -247,5 +295,86 @@ internal fun Viewer(
                     Text(label, color = Color(0xfffff1e3))
                 }
             }
+    }
+}
+
+@Composable
+private fun ViewerButton(label: String, onClick: () -> Unit, enabled: Boolean = true) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.heightIn(min = 48.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = Color(0xee191a1c),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+    ) {
+        Text(label)
+    }
+}
+
+@Composable
+private fun ViewerImage(
+    photo: PhotoItem,
+    modifier: Modifier = Modifier,
+    scale: Float = 1f,
+    offset: Offset = Offset.Zero,
+    preview: Boolean = false,
+    onBounds: ((Rect) -> Unit)? = null,
+) {
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        val portrait = photo.orientation == 6 || photo.orientation == 8
+        val displayAspectRatio = if (portrait) 1f / PREVIEW_ASPECT_RATIO else PREVIEW_ASPECT_RATIO
+        val viewportRatio = maxWidth / maxHeight
+        val displayWidth = if (viewportRatio > displayAspectRatio) {
+            maxHeight * displayAspectRatio
+        } else {
+            maxWidth
+        }
+        val displayHeight = if (viewportRatio > displayAspectRatio) {
+            maxHeight
+        } else {
+            maxWidth / displayAspectRatio
+        }
+        val rawWidth = if (portrait) displayHeight else displayWidth
+        val rawHeight = if (portrait) displayWidth else displayHeight
+
+        Box(
+            modifier = Modifier
+                .width(displayWidth)
+                .height(displayHeight)
+                .onGloballyPositioned { onBounds?.invoke(it.boundsInRoot()) },
+            contentAlignment = Alignment.Center,
+        ) {
+            val file = if (preview) photo.viewFile ?: photo.thumbFile else photo.viewFile
+            if (file == null) {
+                Text(
+                    photo.displayName(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.clearAndSetSemantics { },
+                )
+            } else {
+                Image(
+                    painter = rememberAsyncImagePainter(file),
+                    contentDescription = if (preview) null else photo.jpg,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .width(rawWidth)
+                        .height(rawHeight)
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y,
+                            rotationZ = orientationRotation(photo.orientation),
+                        ),
+                )
+            }
+        }
     }
 }

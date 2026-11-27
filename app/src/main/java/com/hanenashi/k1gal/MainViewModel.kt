@@ -20,6 +20,7 @@ import com.hanenashi.k1gal.download.MediaStoreWriter
 import com.hanenashi.k1gal.gallery.GalleryRepository
 import com.hanenashi.k1gal.gallery.PreviewCache
 import com.hanenashi.k1gal.gallery.photoOrder
+import com.hanenashi.k1gal.model.CameraStatus
 import com.hanenashi.k1gal.model.DownloadKind
 import com.hanenashi.k1gal.model.PhotoItem
 import com.hanenashi.k1gal.util.displayName
@@ -47,6 +48,9 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     var cameraIp by mutableStateOf(guessCameraIp())
         private set
+    var cameraStatus by mutableStateOf<CameraStatus>(CameraStatus.Unchecked)
+        private set
+    private var cameraStatusRequest = 0
     var sdCard by mutableStateOf("1")
         private set
     var status by mutableStateOf("Connect to K-1 Wi-Fi, then scan.")
@@ -82,7 +86,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun updateCameraIp(value: String) {
+        if (cameraIp == value) return
         cameraIp = value
+        cameraStatusRequest++
+        cameraStatus = CameraStatus.Unchecked
     }
 
     fun updateSdCard(value: String) {
@@ -90,18 +97,41 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun useCameraIp() {
-        cameraIp = guessCameraIp()
+        updateCameraIp(guessCameraIp())
         status = "Using likely K-1 address: $cameraIp"
+        refreshCameraStatus()
+    }
+
+    fun refreshCameraStatus() {
+        if (busy || liveViewVisible || captureBusy || cameraStatus == CameraStatus.Checking) return
+        val ip = cameraIp.trim()
+        if (ip.isEmpty() || ip in wifiNetwork.wifiLocalIps()) {
+            cameraStatus = CameraStatus.Unreachable
+            return
+        }
+        val request = ++cameraStatusRequest
+        cameraStatus = CameraStatus.Checking
+        thread(name = "k1gal-status") {
+            val result = try {
+                wifiNetwork.bindProcessToWifi()
+                cameraApi.deviceStatus(ip)
+            } catch (_: Exception) {
+                CameraStatus.Unreachable
+            }
+            postToMain {
+                if (request == cameraStatusRequest) cameraStatus = result
+            }
+        }
     }
 
     fun scanListOnly() {
-        startWork("Reading K-1 file list...") { ip, sd ->
+        startWork("Reading K-1 file list...", refreshStatus = true) { ip, sd ->
             val listed = gallery.listPhotos(ip, sd)
             postToMain {
                 photos.clear()
                 selected.clear()
                 photos.addAll(listed)
-                status = "Listed ${listed.size} JPEGs. Tap a card to fetch its thumbnail, or use All."
+                status = "Listed ${listed.size} JPEGs. Open a photo or use Preview all."
             }
         }
     }
@@ -171,11 +201,12 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     private fun fetchViewAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
+        val sourceViewerIndex = viewerIndex
         startWork("Fetching view: ${photo.jpg}") { ip, sd ->
             val cachedPhoto = ensureViewCached(ip, sd, photo)
             postToMain {
                 val freshIndex = photos.indexOfFirst { it.dir == cachedPhoto.dir && it.jpg == cachedPhoto.jpg }
-                if (freshIndex >= 0 && !cancelRequested) {
+                if (freshIndex >= 0 && !cancelRequested && viewerIndex == sourceViewerIndex) {
                     openCachedViewer(freshIndex)
                     status = "View cached: ${cachedPhoto.displayName()}."
                 }
@@ -216,6 +247,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun openAdjacentPhoto(delta: Int) {
+        if (busy || captureBusy) return
         val current = viewerIndex ?: return
         val target = (current + delta).coerceIn(0, photos.lastIndex)
         if (target != current) openPhotoAt(target)
@@ -288,7 +320,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         )
     }
 
-    private fun startWork(initialStatus: String, block: (ip: String, sd: String) -> Unit) {
+    private fun startWork(
+        initialStatus: String,
+        refreshStatus: Boolean = false,
+        block: (ip: String, sd: String) -> Unit,
+    ) {
         if (busy || captureBusy) return
         busy = true
         cancelRequested = false
@@ -320,6 +356,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     }
                     viewerLoadingLabel = null
                     busy = false
+                    if (refreshStatus && !cancelRequested) refreshCameraStatus()
                 }
             }
         }

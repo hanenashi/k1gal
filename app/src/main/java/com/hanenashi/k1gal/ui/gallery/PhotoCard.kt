@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -19,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
@@ -35,12 +40,21 @@ internal fun PhotoCard(
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit,
 ) {
+    val name = photo.displayName()
+    val selectionLabel = if (isSelected) "Deselect $name" else "Select $name"
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onOpen, onLongClick = onToggleSelect),
+            .combinedClickable(
+                onClick = onOpen,
+                onClickLabel = "Open $name",
+                onLongClick = onToggleSelect,
+                onLongClickLabel = selectionLabel,
+            ),
+        shape = RoundedCornerShape(12.dp),
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Color(0xff3a2110) else Color(0xff18120e),
+            containerColor = if (isSelected) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
@@ -49,7 +63,7 @@ internal fun PhotoCard(
             if (cacheFile != null && cacheFile.exists()) {
                 Image(
                     painter = rememberAsyncImagePainter(cacheFile),
-                    contentDescription = photo.jpg,
+                    contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -58,24 +72,30 @@ internal fun PhotoCard(
                 )
             } else {
                 Box(
-                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xff2a1a10)),
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(if (photo.loading) "..." else "tap", color = Color(0xffffb15c))
+                    Text(
+                        if (photo.loading) "Loading…" else "Preview",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onToggleSelect() },
-                modifier = Modifier.align(Alignment.TopEnd),
+                modifier = Modifier.align(Alignment.TopEnd).size(48.dp)
+                    .background(Color(0xd9191a1c), RoundedCornerShape(bottomStart = 12.dp, topEnd = 12.dp))
+                    .semantics { contentDescription = selectionLabel },
             )
         }
         Text(
-            text = photo.displayName(),
+            text = name,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = Color(0xfffff1e3),
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
@@ -83,7 +103,7 @@ internal fun PhotoCard(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 0.dp).padding(bottom = 6.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = Color(0xffffb15c),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.labelSmall,
         )
     }

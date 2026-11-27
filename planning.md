@@ -196,8 +196,8 @@ Do not create separate Gradle modules yet. Source packages and files are enough 
 
 Before broad manual controls, add high-value, low-risk improvements:
 
-1. Clear camera connection state and connected model/firmware display.
-2. Battery, storage availability, remaining-shot count, and heat warning.
+1. Camera connection state, model, and firmware display (completed).
+2. Battery, storage availability, remaining-shot count, and heat warning (completed).
 3. Better selection tools, including select all and range selection.
 4. Cache size reporting and cache policy controls.
 5. Longer live-view testing across rotation, reconnects, app backgrounding, heat, battery use, and memory pressure.

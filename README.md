@@ -4,15 +4,15 @@
 
 # k1gal
 
-Android gallery for the Pentax K-1 Wi-Fi API. Current app version: `0.3.0`.
+Android gallery for the Pentax K-1 Wi-Fi API. Current app version is `0.4.0`.
 
 ## Nerdy TL;DR
 
 `k1gal` is a tiny native Android client for the Pentax K-1 HTTP API at
 `192.168.0.1`. It binds camera traffic to Wi-Fi, asks `/v1/photos` for the SD
 card file list, renders an empty local gallery first, and only pulls JPEG
-previews into app cache when you ask for them. Selected downloads can save those
-cached camera JPEGs or fetch matching RAW originals, and both are written to
+previews into app cache when you ask for them. Selected downloads fetch full
+camera JPEGs or matching RAW originals, and both are written to
 `Download/k1gal`.
 
 The point is to keep the slow K-1 Wi-Fi link out of the browsing loop: list
@@ -25,16 +25,15 @@ The app is designed for the "small JPEG previews on SD card" workflow:
 1. Connect the Pixel to the `PENTAX_...` Wi-Fi network.
 2. Scan the selected SD card.
 3. Scan lists the camera files without downloading every preview.
-4. Tap individual cards to fetch only those JPEG previews, or use `All`.
-5. Select photos and use `Down` to save either cached JPEGs or matching RAW
+4. Tap individual cards to fetch their JPEG previews, or use **Preview all**.
+5. Select photos and use **Download** to save full JPEGs or matching RAW
    files to `Download/k1gal`.
 
-RAW downloads use the RAW filename reported by the K-1 file list. JPEG previews
-stay in temporary app cache until saved through `Down`, and the cache can be
-cleared from inside the app. The fullscreen viewer supports horizontal swipes,
-double-tap zoom, pinch zoom, and one-finger pan while zoomed; swiping to an
-uncached neighbor fetches that preview. Connection settings, help text, the
-GitHub link, and version live behind `Set`.
+RAW downloads use the RAW filename reported by the K-1. The fullscreen viewer
+supports interactive horizontal swipes, Previous and Next buttons, double-tap
+zoom, pinch zoom, and one-finger pan while zoomed. Opening an uncached neighbor
+fetches its preview. **Settings** contains connection options, camera status,
+the cache clearing action, and the app version.
 
 ## Build
 
@@ -122,13 +121,19 @@ controls remain future work.
   point, preserving existing behavior throughout the refactor.
 - [x] Organize the code in source packages within the existing app module.
 
-### 7. Read-only camera status — next
+### 7. Read-only camera status — completed
 
-- Show connection state, camera model and firmware, battery level, SD storage
-  availability, remaining shots, and heat warnings.
+- The gallery summarizes the most recent camera check, battery, and remaining
+  shots on the active SD card. A scan refreshes that summary.
+- Camera settings shows model, firmware, both SD slots, and heat warnings.
+  Use **Check camera** to refresh it manually.
 - See [planning.md](planning.md) for the remaining gallery and reliability work.
 
-### 8. Optional camera controls — later
+### 8. Gallery selection — next
+
+- Add Select all and range selection for browsing larger SD cards.
+
+### 9. Optional camera controls — later
 
 - Consider aperture, shutter, ISO, exposure compensation, and white balance
   only after viewing and capture are reliable.

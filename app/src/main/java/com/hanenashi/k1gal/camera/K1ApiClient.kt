@@ -1,5 +1,9 @@
 package com.hanenashi.k1gal.camera
 
+import com.hanenashi.k1gal.model.CameraStatus
+import com.hanenashi.k1gal.model.StorageSlot
+import com.hanenashi.k1gal.util.forEachObject
+import com.hanenashi.k1gal.util.orEmpty
 import okhttp3.Call
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
@@ -18,6 +22,38 @@ internal class K1ApiClient {
     private val liveClient = client.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+    private val statusClient = client.newBuilder()
+        .callTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    fun deviceStatus(ip: String): CameraStatus.Connected {
+        val device = getJson("http://$ip/v1/props/device", statusClient)
+        check(device.optInt("errCode") == 200) { "Camera status unavailable" }
+        val slots = buildList {
+            device.optJSONArray("storages").orEmpty().forEachObject { slot ->
+                val name = slot.optString("name").lowercase()
+                if (name == "sd1" || name == "sd2") {
+                    add(
+                        StorageSlot(
+                            name = name.uppercase(),
+                            equipped = slot.optBoolean("equipped"),
+                            available = slot.optBoolean("available"),
+                            writable = slot.optBoolean("writable"),
+                            active = slot.optBoolean("active"),
+                            remainingShots = slot.optInt("remain", -1).takeIf { it >= 0 },
+                        ),
+                    )
+                }
+            }
+        }
+        return CameraStatus.Connected(
+            model = device.optString("model").takeIf { it.isNotBlank() },
+            firmware = device.optString("firmwareVersion").takeIf { it.isNotBlank() },
+            batteryPercent = device.optInt("battery", -1).takeIf { it in 0..100 },
+            hot = device.optBoolean("hot"),
+            slots = slots,
+        )
+    }
 
     fun cameraProperties(ip: String): JSONObject = getJson("http://$ip/v1/props/camera")
 
@@ -75,9 +111,9 @@ internal class K1ApiClient {
 
     fun cancelCalls() = client.dispatcher.cancelAll()
 
-    private fun getJson(url: String): JSONObject {
+    private fun getJson(url: String, http: OkHttpClient = client): JSONObject {
         val request = Request.Builder().url(url).build()
-        return client.newCall(request).execute().use { response ->
+        return http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("HTTP ${response.code}")
             JSONObject(response.body?.string() ?: error("Empty response"))
         }

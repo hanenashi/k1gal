@@ -21,6 +21,8 @@ class MainActivity : ComponentActivity() {
                 photos = model.galleryPhotos,
                 selected = model.selectedPhotos,
                 cameraIp = model.cameraIp,
+                cameraStatus = model.cameraStatus,
+                onRefreshCameraStatus = model::refreshCameraStatus,
                 onCameraIpChange = model::updateCameraIp,
                 sdCard = model.sdCard,
                 onSdCardChange = model::updateSdCard,

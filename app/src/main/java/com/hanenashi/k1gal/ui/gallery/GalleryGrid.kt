@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.hanenashi.k1gal.model.PhotoItem
 
@@ -18,11 +19,12 @@ internal fun GalleryGrid(
     onOpen: (PhotoItem) -> Unit,
     onToggleSelect: (PhotoItem) -> Unit,
 ) {
+    val minimumTileWidth = if (LocalDensity.current.fontScale > 1.25f) 152.dp else 118.dp
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 118.dp),
-        contentPadding = PaddingValues(8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        columns = GridCells.Adaptive(minSize = minimumTileWidth),
+        contentPadding = PaddingValues(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
         items(photos, key = { "${it.dir}/${it.jpg}" }) { photo ->
