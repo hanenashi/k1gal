@@ -31,6 +31,12 @@ internal fun orientationRotation(orientation: Int?): Float = when (orientation) 
     else -> 0f
 }
 
+internal fun PhotoItem.previewRotation(exifOrientation: Int?): Float {
+    // Coil already applies orientation embedded in the local JPEG.
+    val cameraRotation = if (exifOrientation in 2..8) 0f else orientationRotation(orientation)
+    return (cameraRotation + manualRotation) % 360f
+}
+
 private fun formatShutter(value: String): String {
     val parts = value.split(".", limit = 2)
     if (parts.size != 2) return value

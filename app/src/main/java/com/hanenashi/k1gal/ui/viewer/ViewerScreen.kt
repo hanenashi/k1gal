@@ -20,15 +20,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,10 +61,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
 import com.hanenashi.k1gal.model.PhotoItem
+import com.hanenashi.k1gal.share.ShareQuality
 import com.hanenashi.k1gal.util.displayName
 import com.hanenashi.k1gal.util.exposureMetaText
 import com.hanenashi.k1gal.util.formatMegabytes
-import com.hanenashi.k1gal.util.orientationRotation
+import com.hanenashi.k1gal.util.previewRotation
 import com.hanenashi.k1gal.util.viewerTimestamp
 import kotlin.math.abs
 import kotlinx.coroutines.launch
@@ -77,6 +83,8 @@ internal fun Viewer(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     loadingLabel: String?,
+    onRotatePreview: (Int?) -> Unit,
+    onSharePhoto: (ShareQuality) -> Unit,
 ) {
     val pageKey = photo.dir to photo.jpg
     var scale by remember(pageKey) { mutableFloatStateOf(1f) }
@@ -94,6 +102,13 @@ internal fun Viewer(
     val goPrevious by rememberUpdatedState(onPrev)
     val goNext by rememberUpdatedState(onNext)
     val close by rememberUpdatedState(onClose)
+    var rotationMenuOpen by remember(pageKey) { mutableStateOf(false) }
+    var shareDialogOpen by remember(pageKey) { mutableStateOf(false) }
+
+    LaunchedEffect(pageKey, photo.manualRotation) {
+        scale = 1f
+        offset = Offset.Zero
+    }
 
     LaunchedEffect(pageKey, loadingLabel, awaitingPage) {
         if (awaitingPage && loadingLabel == null) {
@@ -265,6 +280,30 @@ internal fun Viewer(
                 val size = photo.rawSizeBytes?.let(::formatMegabytes) ?: "checking size..."
                 Text("$raw  $size", color = Color(0xffd9a477), style = MaterialTheme.typography.bodySmall)
             }
+            val actionsEnabled = loadingLabel == null && !settling && !awaitingPage
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box {
+                    TextButton(
+                        onClick = { rotationMenuOpen = true },
+                        enabled = actionsEnabled,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Rotate") }
+                    DropdownMenu(expanded = rotationMenuOpen, onDismissRequest = { rotationMenuOpen = false }) {
+                        listOf("Rotate right" to 90, "Rotate left" to -90, "Use capture orientation" to null)
+                            .forEach { (label, delta) ->
+                                DropdownMenuItem(text = { Text(label) }, onClick = {
+                                    rotationMenuOpen = false
+                                    onRotatePreview(delta)
+                                })
+                            }
+                    }
+                }
+                TextButton(
+                    onClick = { shareDialogOpen = true },
+                    enabled = actionsEnabled,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("Share") }
+            }
         }
         Row(
             modifier = Modifier
@@ -296,6 +335,32 @@ internal fun Viewer(
                 }
             }
     }
+    if (shareDialogOpen) {
+        SharePhotoDialog(
+            onDismiss = { shareDialogOpen = false },
+            onChoose = {
+                shareDialogOpen = false
+                onSharePhoto(it)
+            },
+        )
+    }
+}
+
+@Composable
+private fun SharePhotoDialog(onDismiss: () -> Unit, onChoose: (ShareQuality) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share photo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = { onChoose(ShareQuality.PREVIEW) }) { Text("Quick preview") }
+                Text("Uses the cached preview and its displayed rotation.")
+                TextButton(onClick = { onChoose(ShareQuality.FULL_JPEG) }) { Text("Full JPEG") }
+                Text("Fetches the original JPEG from the camera.")
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -327,7 +392,12 @@ private fun ViewerImage(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
-        val portrait = photo.orientation == 6 || photo.orientation == 8
+        val usesThumbnail = preview && photo.viewFile == null
+        val file = if (usesThumbnail) photo.thumbFile else photo.viewFile
+        val exif = if (usesThumbnail) photo.thumbExifOrientation else photo.viewExifOrientation
+        val rotation = photo.previewRotation(exif)
+        val quarterTurn = rotation == 90f || rotation == 270f
+        val portrait = (exif in 5..8) xor quarterTurn
         val displayAspectRatio = if (portrait) 1f / PREVIEW_ASPECT_RATIO else PREVIEW_ASPECT_RATIO
         val viewportRatio = maxWidth / maxHeight
         val displayWidth = if (viewportRatio > displayAspectRatio) {
@@ -340,8 +410,8 @@ private fun ViewerImage(
         } else {
             maxWidth / displayAspectRatio
         }
-        val rawWidth = if (portrait) displayHeight else displayWidth
-        val rawHeight = if (portrait) displayWidth else displayHeight
+        val rawWidth = if (quarterTurn) displayHeight else displayWidth
+        val rawHeight = if (quarterTurn) displayWidth else displayHeight
 
         Box(
             modifier = Modifier
@@ -350,7 +420,6 @@ private fun ViewerImage(
                 .onGloballyPositioned { onBounds?.invoke(it.boundsInRoot()) },
             contentAlignment = Alignment.Center,
         ) {
-            val file = if (preview) photo.viewFile ?: photo.thumbFile else photo.viewFile
             if (file == null) {
                 Text(
                     photo.displayName(),
@@ -364,14 +433,13 @@ private fun ViewerImage(
                     contentDescription = if (preview) null else photo.jpg,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
-                        .width(rawWidth)
-                        .height(rawHeight)
+                        .requiredSize(rawWidth, rawHeight)
                         .graphicsLayer(
                             scaleX = scale,
                             scaleY = scale,
                             translationX = offset.x,
                             translationY = offset.y,
-                            rotationZ = orientationRotation(photo.orientation),
+                            rotationZ = rotation,
                         ),
                 )
             }

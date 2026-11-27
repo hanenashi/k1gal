@@ -198,8 +198,8 @@ Before broad manual controls, add high-value, low-risk improvements:
 
 1. Camera connection state, model, and firmware display (completed).
 2. Battery, storage availability, remaining-shot count, and heat warning (completed).
-3. Better selection tools, including select all and range selection.
-4. Cache size reporting and cache policy controls.
+3. Better selection tools, including select all and range selection (completed).
+4. Cache size reporting and cache policy controls (completed).
 5. Longer live-view testing across rotation, reconnects, app backgrounding, heat, battery use, and memory pressure.
 6. Better cancellation and recovery tests for JPEG and RAW downloads.
 7. Only then consider aperture, shutter speed, ISO, exposure compensation, and white balance controls.

@@ -30,37 +30,41 @@ import coil.compose.rememberAsyncImagePainter
 import com.hanenashi.k1gal.model.PhotoItem
 import com.hanenashi.k1gal.util.cardMetaText
 import com.hanenashi.k1gal.util.displayName
-import com.hanenashi.k1gal.util.orientationRotation
+import com.hanenashi.k1gal.util.previewRotation
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun PhotoCard(
     photo: PhotoItem,
     isSelected: Boolean,
+    isRangeStart: Boolean,
+    rangeAction: String?,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit,
 ) {
     val name = photo.displayName()
-    val selectionLabel = if (isSelected) "Deselect $name" else "Select $name"
+    val selectionLabel = rangeAction?.let { "$it $name" } ?: if (isSelected) "Deselect $name" else "Select $name"
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onOpen,
-                onClickLabel = "Open $name",
+                onClickLabel = if (rangeAction == null) "Open $name" else selectionLabel,
                 onLongClick = onToggleSelect,
                 onLongClickLabel = selectionLabel,
             ),
         shape = RoundedCornerShape(12.dp),
-        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        border = if (isSelected || isRangeStart) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Box {
-            val cacheFile = photo.thumbFile ?: photo.viewFile
+            val thumb = photo.thumbFile?.takeIf { it.exists() }
+            val cacheFile = thumb ?: photo.viewFile
             if (cacheFile != null && cacheFile.exists()) {
+                val exif = if (thumb != null) photo.thumbExifOrientation else photo.viewExifOrientation
                 Image(
                     painter = rememberAsyncImagePainter(cacheFile),
                     contentDescription = null,
@@ -68,7 +72,7 @@ internal fun PhotoCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
-                        .graphicsLayer(rotationZ = orientationRotation(photo.orientation)),
+                        .graphicsLayer(rotationZ = photo.previewRotation(exif)),
                 )
             } else {
                 Box(
@@ -83,7 +87,7 @@ internal fun PhotoCard(
                 }
             }
             Checkbox(
-                checked = isSelected,
+                checked = isSelected || isRangeStart,
                 onCheckedChange = { onToggleSelect() },
                 modifier = Modifier.align(Alignment.TopEnd).size(48.dp)
                     .background(Color(0xd9191a1c), RoundedCornerShape(bottomStart = 12.dp, topEnd = 12.dp))

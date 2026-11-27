@@ -68,6 +68,10 @@ internal class K1ApiClient {
     fun photoInfo(ip: String, sd: String, dir: String, fileName: String): JSONObject =
         getJson("${photoPath(ip, dir, fileName)}/info?storage=sd$sd")
 
+    fun previewOrientation(ip: String, sd: String, dir: String, fileName: String): Int? =
+        getJson("${photoPath(ip, dir, fileName)}/info?storage=sd$sd", statusClient)
+            .optInt("orientation").takeIf { it in 1..8 }
+
     fun shoot(ip: String, autofocus: String): JSONObject {
         val request = Request.Builder()
             .url("http://$ip/v1/camera/shoot")

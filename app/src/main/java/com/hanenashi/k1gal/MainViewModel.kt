@@ -1,6 +1,7 @@
 package com.hanenashi.k1gal
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.os.Handler
@@ -19,14 +20,23 @@ import com.hanenashi.k1gal.download.DownloadRepository
 import com.hanenashi.k1gal.download.MediaStoreWriter
 import com.hanenashi.k1gal.gallery.GalleryRepository
 import com.hanenashi.k1gal.gallery.PreviewCache
+import com.hanenashi.k1gal.gallery.PreviewCacheUsage
+import com.hanenashi.k1gal.gallery.previewCacheLimitsMb
+import com.hanenashi.k1gal.gallery.exifOrientation
 import com.hanenashi.k1gal.gallery.photoOrder
 import com.hanenashi.k1gal.model.CameraStatus
 import com.hanenashi.k1gal.model.DownloadKind
 import com.hanenashi.k1gal.model.PhotoItem
+import com.hanenashi.k1gal.model.key
+import com.hanenashi.k1gal.share.PhotoShareRepository
+import com.hanenashi.k1gal.share.ShareEvent
+import com.hanenashi.k1gal.share.ShareQuality
 import com.hanenashi.k1gal.util.displayName
 import com.hanenashi.k1gal.util.downloadProgressText
 import com.hanenashi.k1gal.util.formatMegabytes
 import kotlin.concurrent.thread
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.receiveAsFlow
 
 private const val DEFAULT_CAMERA_IP = "192.168.0.1"
 
@@ -34,9 +44,19 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private val main = Handler(Looper.getMainLooper())
     private val cameraApi = K1ApiClient()
     private val wifiNetwork = WifiNetworkBinder(application.getSystemService(ConnectivityManager::class.java))
-    private val previewCache = PreviewCache(application.cacheDir)
+    private val previewCache = PreviewCache(
+        application.cacheDir,
+        application.getSharedPreferences("preview_orientation", Context.MODE_PRIVATE),
+    )
+    private val cacheSettings = application.getSharedPreferences("preview_cache", Context.MODE_PRIVATE)
     private val gallery = GalleryRepository(cameraApi, previewCache)
     private val downloads = DownloadRepository(cameraApi, application.cacheDir, MediaStoreWriter(application.contentResolver))
+    private val photoShares = PhotoShareRepository(application.cacheDir, downloads)
+    private val shareResults = Channel<ShareEvent>(Channel.BUFFERED)
+    val shareEvents = shareResults.receiveAsFlow()
+
+    @Volatile
+    private var shareRequest = 0
     private val liveView = LiveViewController(cameraApi, wifiNetwork)
     private val capture = CaptureController(cameraApi, wifiNetwork)
 
@@ -45,6 +65,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     val galleryPhotos: List<PhotoItem> get() = photos.toList()
     val selectedPhotos: List<PhotoItem> get() = selected.toList()
     private val rawSizeRequests = mutableSetOf<String>()
+    private val orientationAttempts = mutableSetOf<String>()
+    private var orientationCandidates = emptyList<PhotoItem>()
+    private var orientationInFlight = false
+    var selectingRange by mutableStateOf(false)
+        private set
+    var rangeStart by mutableStateOf<PhotoItem?>(null)
+        private set
 
     var cameraIp by mutableStateOf(guessCameraIp())
         private set
@@ -57,6 +84,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         private set
     var busy by mutableStateOf(false)
         private set
+    var cacheUsage by mutableStateOf<PreviewCacheUsage?>(null)
+        private set
+    var cacheLimitMb by mutableStateOf(cacheSettings.getInt("limit_mb", 0).takeIf { it in previewCacheLimitsMb } ?: 0)
+        private set
+    private var cacheMaintenanceRunning = false
     var viewerIndex by mutableStateOf<Int?>(null)
         private set
     var viewerLoadingLabel by mutableStateOf<String?>(null)
@@ -83,6 +115,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     init {
         photos.addAll(previewCache.loadExisting())
         if (photos.isNotEmpty()) status = "Loaded ${photos.size} cached previews. Scan to refresh file list."
+        refreshCacheUsage()
     }
 
     fun updateCameraIp(value: String) {
@@ -90,6 +123,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         cameraIp = value
         cameraStatusRequest++
         cameraStatus = CameraStatus.Unchecked
+        orientationAttempts.clear()
+        orientationCandidates = emptyList()
     }
 
     fun updateSdCard(value: String) {
@@ -129,9 +164,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             val listed = gallery.listPhotos(ip, sd)
             postToMain {
                 photos.clear()
-                selected.clear()
+                clearSelection()
+                orientationAttempts.clear()
                 photos.addAll(listed)
-                status = "Listed ${listed.size} JPEGs. Open a photo or use Preview all."
+                status = "Listed ${listed.size} photos."
             }
         }
     }
@@ -142,11 +178,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             status = "Scan first to list camera files."
             return
         }
-        startWork("Caching thumbnails...") { ip, sd ->
+        startWork("Caching thumbnails...") { ip, _ ->
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
                 postToMain { status = "Caching ${index + 1}/${targets.size}: ${photo.jpg}" }
-                ensureThumbnailCached(ip, sd, photo)
+                ensureThumbnailCached(ip, photo.storageSlot, photo)
             }
             postToMain {
                 status = if (cancelRequested) "Stopped thumbnail caching." else "Cached available thumbnails."
@@ -155,7 +191,12 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun openPhoto(photo: PhotoItem) {
-        val index = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
+        if (cacheMaintenanceRunning) return
+        if (selectingRange) {
+            toggleSelection(photo)
+            return
+        }
+        val index = photos.indexOfFirst { it.key == photo.key }
         if (index < 0) return
         val current = photos[index]
         val view = current.viewFile
@@ -173,6 +214,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun closeViewer() {
+        shareRequest++
         viewerIndex = null
         suppressViewerOpenUntilMs = SystemClock.uptimeMillis() + 350L
     }
@@ -193,8 +235,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     private fun fetchThumbnailAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
-        startWork("Fetching thumbnail: ${photo.jpg}") { ip, sd ->
-            ensureThumbnailCached(ip, sd, photo)
+        startWork("Fetching thumbnail: ${photo.jpg}") { ip, _ ->
+            ensureThumbnailCached(ip, photo.storageSlot, photo)
             postToMain { status = "Thumbnail cached. Tap again to open ${photo.displayName()}." }
         }
     }
@@ -202,10 +244,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private fun fetchViewAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
         val sourceViewerIndex = viewerIndex
-        startWork("Fetching view: ${photo.jpg}") { ip, sd ->
-            val cachedPhoto = ensureViewCached(ip, sd, photo)
+        startWork("Fetching view: ${photo.jpg}") { ip, _ ->
+            val cachedPhoto = ensureViewCached(ip, photo.storageSlot, photo)
             postToMain {
-                val freshIndex = photos.indexOfFirst { it.dir == cachedPhoto.dir && it.jpg == cachedPhoto.jpg }
+                val freshIndex = photos.indexOfFirst { it.key == cachedPhoto.key }
                 if (freshIndex >= 0 && !cancelRequested && viewerIndex == sourceViewerIndex) {
                     openCachedViewer(freshIndex)
                     status = "View cached: ${cachedPhoto.displayName()}."
@@ -216,26 +258,98 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     private fun openCachedViewer(index: Int) {
         viewerIndex = index
+        photos.getOrNull(index)?.let {
+            previewCache.touch(it.thumbFile)
+            previewCache.touch(it.viewFile)
+        }
         fetchRawSizeAt(index)
+    }
+
+    fun refreshPreviewOrientations(visible: List<PhotoItem>) {
+        orientationCandidates = visible
+        probeNextOrientation()
+    }
+
+    private fun probeNextOrientation() {
+        if (busy || captureBusy || liveViewVisible || orientationInFlight || cameraStatus !is CameraStatus.Connected) return
+        val photo = orientationCandidates.firstOrNull {
+            it.orientation == null && (it.thumbFile != null || it.viewFile != null) && it.key !in orientationAttempts
+        } ?: return
+        orientationAttempts.add(photo.key)
+        orientationInFlight = true
+        val ip = cameraIp.trim()
+        thread(name = "k1gal-orientation") {
+            val orientation = runCatching {
+                cameraApi.previewOrientation(ip, photo.storageSlot, photo.dir, photo.jpg)
+            }.getOrNull()
+            postToMain {
+                orientationInFlight = false
+                if (ip == cameraIp.trim() && orientation != null) {
+                    updatePhoto(photo) {
+                        if (it.orientation != null) it else it.copy(orientation = orientation).also(previewCache::rememberOrientation)
+                    }
+                }
+                probeNextOrientation()
+            }
+        }
+    }
+
+    fun rotatePreview(delta: Int?) {
+        if (busy) return
+        val index = viewerIndex ?: return
+        val photo = photos.getOrNull(index) ?: return
+        photos[index] = previewCache.rotate(photo, delta)
+    }
+
+    fun sharePhoto(quality: ShareQuality) {
+        if (busy || captureBusy) return
+        val photo = viewerIndex?.let(photos::getOrNull) ?: return
+        val ip = cameraIp.trim()
+        val request = ++shareRequest
+        busy = true
+        cancelRequested = false
+        viewerLoadingLabel = if (quality == ShareQuality.PREVIEW) "Preparing preview…" else "Fetching full JPEG…"
+        thread(name = "k1gal-share") {
+            val result = runCatching {
+                if (quality == ShareQuality.FULL_JPEG) {
+                    check(ip.isNotEmpty() && ip !in wifiNetwork.wifiLocalIps()) { "Connect to the K-1 Wi-Fi for the full JPEG." }
+                    wifiNetwork.bindProcessToWifi()
+                }
+                photoShares.prepare(photo, quality, ip, isCancelled = { isCancelled() || request != shareRequest }) { bytes, total ->
+                    postToMain {
+                        if (request == shareRequest) {
+                            viewerLoadingLabel = downloadProgressText("JPEG", 1, 1, bytes, total)
+                        }
+                    }
+                }
+            }
+            postToMain {
+                viewerLoadingLabel = null
+                busy = false
+                if (request == shareRequest && !cancelRequested) {
+                    result.onSuccess { it?.let { file -> shareResults.trySend(ShareEvent.Ready(file)) } }
+                    result.onFailure { shareResults.trySend(ShareEvent.Failed(it.message ?: "Could not prepare the photo.")) }
+                }
+                probeNextOrientation()
+            }
+        }
     }
 
     private fun fetchRawSizeAt(index: Int) {
         val photo = photos.getOrNull(index) ?: return
         val raw = photo.raw ?: return
         if (photo.rawSizeBytes != null) return
-        val key = "${photo.dir}/$raw"
+        val key = photo.key
         if (!rawSizeRequests.add(key)) return
         val ip = cameraIp.trim()
-        val sd = sanitizeSd()
 
         thread(name = "k1gal-raw-size") {
             try {
                 wifiNetwork.bindProcessToWifi()
-                val bytes = cameraApi.remoteFileSize(ip, sd, photo.dir, raw)
+                val bytes = cameraApi.remoteFileSize(ip, photo.storageSlot, photo.dir, raw)
                 if (bytes != null) {
                     postToMain {
-                        val freshIndex = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
-                        if (freshIndex >= 0) photos[freshIndex] = photos[freshIndex].copy(rawSizeBytes = bytes)
+                        updatePhoto(photo) { it.copy(rawSizeBytes = bytes) }
                     }
                 }
             } catch (_: Exception) {
@@ -254,7 +368,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun openLiveView() {
-        if (liveViewVisible) return
+        if (liveViewVisible || busy) return
         viewerIndex = null
         liveFrame = null
         liveStatus = "Opening K-1 live view..."
@@ -295,14 +409,17 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     val dir = metadata.optString("dir")
                     val listed = gallery.listPhotos(ip, sd)
                     val photo = listed.firstOrNull { it.dir == dir && it.jpg.equals(jpg, ignoreCase = true) }
-                        ?: PhotoItem(dir, jpg, null, null, null, null)
+                        ?: PhotoItem(dir, jpg, null, null, null, null, storageSlot = sd)
                     val thumb = previewCache.thumbnailFile(sd, dir, jpg)
                     if (!thumb.exists() || thumb.length() == 0L) {
                         downloads.downloadToFile(ip, sd, dir, jpg, thumb, "thumb", ::isCancelled)
                     }
-                    val newPhoto = gallery.applyMetadata(photo.copy(thumbFile = thumb), metadata)
+                    val newPhoto = gallery.applyMetadata(
+                        photo.copy(thumbFile = thumb, thumbExifOrientation = thumb.exifOrientation()),
+                        metadata,
+                    )
                     postToMain {
-                        val combined = photos.filterNot { it.dir == newPhoto.dir && it.jpg == newPhoto.jpg } + newPhoto
+                        val combined = photos.filterNot { it.key == newPhoto.key } + newPhoto
                         photos.clear()
                         photos.addAll(combined.sortedWith(photoOrder))
                         captureStatus = "Captured ${newPhoto.displayName()}"
@@ -314,7 +431,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     result.exceptionOrNull()?.let {
                         captureStatus = "Capture failed: ${it.message ?: "unknown error"}"
                     }
-                    captureBusy = false
+                    maintainPreviewCache { captureBusy = false }
                 }
             },
         )
@@ -349,20 +466,27 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 }
             } finally {
                 postToMain {
-                    if (cancelRequested) {
-                        photos.replaceAll { previewCache.restore(sd, it) }
-                        val kept = photos.count { it.thumbFile != null }
-                        status = "Stopped. Kept $kept cached thumbnail(s)."
+                    val stopped = cancelRequested
+                    if (stopped) {
+                        photos.replaceAll(previewCache::restore)
                     }
                     viewerLoadingLabel = null
-                    busy = false
-                    if (refreshStatus && !cancelRequested) refreshCameraStatus()
+                    maintainPreviewCache {
+                        if (stopped) {
+                            val kept = photos.count { it.thumbFile != null }
+                            status = "Stopped. Kept $kept cached thumbnail(s)."
+                        }
+                        busy = false
+                        if (refreshStatus && !stopped) refreshCameraStatus()
+                        probeNextOrientation()
+                    }
                 }
             }
         }
     }
 
     fun stopWork() {
+        if (!busy || cacheMaintenanceRunning) return
         cancelRequested = true
         cameraApi.cancelCalls()
         status = "Stopping..."
@@ -389,14 +513,14 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 return photo
             }
         }
-        val withMetadata = if (photo.takenAt == null) ensureThumbnailCached(ip, sd, photo) else photo
-        val updated = withMetadata.copy(viewFile = file, loading = false)
+        val withMetadata = if (photo.takenAt == null || photo.orientation == null) ensureThumbnailCached(ip, sd, photo) else photo
+        val updated = withMetadata.copy(viewFile = file, viewExifOrientation = file.exifOrientation(), loading = false)
         postToMain { updatePhoto(photo) { updated.copy(rawSizeBytes = it.rawSizeBytes) } }
         return updated
     }
 
     private fun updatePhoto(photo: PhotoItem, update: (PhotoItem) -> PhotoItem) {
-        val index = photos.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
+        val index = photos.indexOfFirst { it.key == photo.key }
         if (index >= 0) photos[index] = update(photos[index])
     }
 
@@ -410,12 +534,12 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private fun downloadSelectedJpegs() {
         val targets = selected.toList()
         if (targets.isEmpty()) return
-        startWork("Saving ${targets.size} JPEG file(s)...") { ip, sd ->
+        startWork("Saving ${targets.size} JPEG file(s)...") { ip, _ ->
             var saved = 0
             var savedBytes = 0L
             targets.forEachIndexed { index, photo ->
                 if (cancelRequested) return@startWork
-                val bytes = downloads.saveJpeg(ip, sd, photo, ::isCancelled) { downloaded, total ->
+                val bytes = downloads.saveJpeg(ip, photo.storageSlot, photo, ::isCancelled) { downloaded, total ->
                     postToMain {
                         status = downloadProgressText("JPEG", index + 1, targets.size, downloaded, total)
                     }
@@ -432,7 +556,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private fun downloadSelectedRaws() {
         val targets = selected.toList()
         if (targets.isEmpty()) return
-        startWork("Downloading ${targets.size} RAW file(s)...") { ip, sd ->
+        startWork("Downloading ${targets.size} RAW file(s)...") { ip, _ ->
             var saved = 0
             var savedBytes = 0L
             var missing = 0
@@ -443,7 +567,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     missing += 1
                     return@forEachIndexed
                 }
-                val bytes = downloads.saveRaw(ip, sd, photo.dir, raw, ::isCancelled) { downloaded, total ->
+                val bytes = downloads.saveRaw(ip, photo.storageSlot, photo.dir, raw, ::isCancelled) { downloaded, total ->
                     postToMain {
                         status = downloadProgressText("RAW", index + 1, targets.size, downloaded, total)
                     }
@@ -459,6 +583,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun clearCache() {
+        if (busy || captureBusy) return
         previewCache.clear()
         photos.replaceAll {
             it.copy(
@@ -473,18 +598,109 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 loading = false,
             )
         }
-        selected.clear()
+        clearSelection()
+        orientationAttempts.clear()
+        orientationCandidates = emptyList()
         viewerIndex = null
+        refreshCacheUsage()
         status = "Preview cache cleared."
     }
 
+    fun changeCacheLimit(limitMb: Int) {
+        if (busy || captureBusy || limitMb !in previewCacheLimitsMb || cacheLimitMb == limitMb) return
+        cacheLimitMb = limitMb
+        cacheSettings.edit().putInt("limit_mb", limitMb).apply()
+        refreshCacheUsage()
+    }
+
+    private fun refreshCacheUsage() {
+        busy = true
+        maintainPreviewCache { busy = false }
+    }
+
+    private fun maintainPreviewCache(onComplete: () -> Unit) {
+        cacheMaintenanceRunning = true
+        val current = viewerIndex?.let(photos::getOrNull)
+        val protected = setOfNotNull(current?.thumbFile, current?.viewFile)
+        val limit = cacheLimitMb
+        val cached = photos.toList()
+        thread(name = "k1gal-cache-budget") {
+            val result = runCatching {
+                val usage = previewCache.enforceLimit(limit, protected)
+                val missing = cached.flatMap { listOfNotNull(it.thumbFile, it.viewFile) }
+                    .filterNot { it.isFile }.toSet()
+                usage to missing
+            }
+            postToMain {
+                result.onSuccess { (usage, missing) ->
+                    cacheUsage = usage
+                    if (missing.isNotEmpty()) {
+                        photos.replaceAll { photo ->
+                            val thumbRemoved = photo.thumbFile in missing
+                            val viewRemoved = photo.viewFile in missing
+                            if (!thumbRemoved && !viewRemoved) photo else photo.copy(
+                                thumbFile = if (thumbRemoved) null else photo.thumbFile,
+                                viewFile = if (viewRemoved) null else photo.viewFile,
+                                thumbExifOrientation = if (thumbRemoved) null else photo.thumbExifOrientation,
+                                viewExifOrientation = if (viewRemoved) null else photo.viewExifOrientation,
+                            )
+                        }
+                    }
+                }
+                result.onFailure { cacheUsage = null }
+                cacheMaintenanceRunning = false
+                onComplete()
+            }
+        }
+    }
+
     fun toggleSelection(photo: PhotoItem) {
-        val selectedIndex = selected.indexOfFirst { it.dir == photo.dir && it.jpg == photo.jpg }
+        if (busy) return
+        if (selectingRange) {
+            val start = rangeStart
+            if (start == null) {
+                rangeStart = photo
+                return
+            }
+            val first = photos.indexOfFirst { it.key == start.key }
+            val last = photos.indexOfFirst { it.key == photo.key }
+            if (first >= 0 && last >= 0) {
+                val selectedKeys = selected.mapTo(mutableSetOf()) { it.key }
+                val range = photos.subList(minOf(first, last), maxOf(first, last) + 1)
+                selected.addAll(range.filter { selectedKeys.add(it.key) })
+            }
+            cancelRange()
+            return
+        }
+        val selectedIndex = selected.indexOfFirst { it.key == photo.key }
         if (selectedIndex >= 0) {
             selected.removeAt(selectedIndex)
         } else {
             selected.add(photo)
         }
+    }
+
+    fun selectAll() {
+        if (busy) return
+        selected.clear()
+        selected.addAll(photos)
+        cancelRange()
+    }
+
+    fun beginRange() {
+        if (busy || photos.isEmpty()) return
+        rangeStart = null
+        selectingRange = true
+    }
+
+    fun cancelRange() {
+        selectingRange = false
+        rangeStart = null
+    }
+
+    fun clearSelection() {
+        selected.clear()
+        cancelRange()
     }
 
     private fun guessCameraIp(): String {
@@ -511,6 +727,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         cancelRequested = true
         liveView.stop()
         cameraApi.cancelCalls()
+        shareResults.close()
         main.removeCallbacksAndMessages(null)
         super.onCleared()
     }

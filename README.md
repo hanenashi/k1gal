@@ -25,15 +25,21 @@ The app is designed for the "small JPEG previews on SD card" workflow:
 1. Connect the Pixel to the `PENTAX_...` Wi-Fi network.
 2. Scan the selected SD card.
 3. Scan lists the camera files without downloading every preview.
-4. Tap individual cards to fetch their JPEG previews, or use **Preview all**.
-5. Select photos and use **Download** to save full JPEGs or matching RAW
+4. Tap individual cards to fetch their JPEG previews, or use **All**.
+5. Select photos and use **Down** to save full JPEGs or matching RAW
    files to `Download/k1gal`.
 
 RAW downloads use the RAW filename reported by the K-1. The fullscreen viewer
 supports interactive horizontal swipes, Previous and Next buttons, double-tap
 zoom, pinch zoom, and one-finger pan while zoomed. Opening an uncached neighbor
-fetches its preview. **Settings** contains connection options, camera status,
-the cache clearing action, and the app version.
+fetches its preview. Preview orientation follows the camera. In fullscreen,
+**Rotate** turns the selected photo left or right, and **Use capture orientation**
+resets it. The rotation applies to previews. **Set** opens connection options,
+camera status, and the app version.
+
+In fullscreen, use **Share** to send a quick preview or fetch a full JPEG
+through Android’s share sheet. The quick preview uses the displayed rotation
+and can be shared from cache without the camera connected.
 
 ## Build
 
@@ -129,11 +135,24 @@ controls remain future work.
   Use **Check camera** to refresh it manually.
 - See [planning.md](planning.md) for the remaining gallery and reliability work.
 
-### 8. Gallery selection — next
+### 8. Gallery selection — completed
 
-- Add Select all and range selection for browsing larger SD cards.
+- Use **Select** below the gallery to select all photos, select a range by
+  tapping its first and last photos, or clear the selection.
 
-### 9. Optional camera controls — later
+### 9. Preview-cache management — completed
+
+- **Set → Preview cache** shows the storage used by thumbnails and fullscreen
+  previews. Choose Unlimited, 25 MB, 100 MB, or 250 MB.
+- The app applies the limit after preview work finishes. It removes older
+  previews first and keeps the photo currently open in the viewer.
+
+### 10. Live-view reliability — next
+
+- Test rotation, Wi-Fi reconnects, backgrounding, heat, battery use, and memory
+  pressure during longer live-view sessions.
+
+### 11. Optional camera controls — later
 
 - Consider aperture, shutter, ISO, exposure compensation, and white balance
   only after viewing and capture are reliable.

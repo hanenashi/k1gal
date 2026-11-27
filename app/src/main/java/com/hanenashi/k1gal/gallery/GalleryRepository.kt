@@ -28,7 +28,7 @@ internal class GalleryRepository(
 
             files.filter { it.endsWith(".JPG", ignoreCase = true) }.forEach { jpg ->
                 val raw = rawByStem[jpg.substringBeforeLast(".").uppercase()]
-                photos.add(previewCache.restore(sd, PhotoItem(dir, jpg, raw, null, null, null)))
+                photos.add(previewCache.restore(PhotoItem(dir, jpg, raw, null, null, null, storageSlot = sd)))
             }
         }
 
@@ -37,7 +37,10 @@ internal class GalleryRepository(
 
     fun thumbnailInfo(ip: String, sd: String, photo: PhotoItem, thumbnail: File): PhotoItem {
         val metadata = cameraApi.photoInfo(ip, sd, photo.dir, photo.jpg)
-        return applyMetadata(photo.copy(thumbFile = thumbnail, loading = false), metadata)
+        return applyMetadata(
+            photo.copy(thumbFile = thumbnail, thumbExifOrientation = thumbnail.exifOrientation(), loading = false),
+            metadata,
+        )
     }
 
     fun applyMetadata(photo: PhotoItem, metadata: JSONObject): PhotoItem =
@@ -47,6 +50,6 @@ internal class GalleryRepository(
             tv = metadata.optString("tv").takeIf { it.isNotBlank() },
             sv = metadata.optString("sv").takeIf { it.isNotBlank() },
             xv = metadata.optString("xv").takeIf { it.isNotBlank() },
-            orientation = metadata.optInt("orientation").takeIf { metadata.has("orientation") },
-        )
+            orientation = metadata.optInt("orientation").takeIf { it in 1..8 } ?: photo.orientation,
+        ).also(previewCache::rememberOrientation)
 }

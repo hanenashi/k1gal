@@ -23,6 +23,9 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.hanenashi.k1gal.model.CameraStatus
+import com.hanenashi.k1gal.gallery.PreviewCacheUsage
+import com.hanenashi.k1gal.gallery.previewCacheLimitsMb
+import com.hanenashi.k1gal.util.formatMegabytes
 
 private const val APP_VERSION = "0.4.0"
 
@@ -37,6 +40,9 @@ internal fun SettingsPanel(
     busy: Boolean,
     onUseCameraIp: () -> Unit,
     onRefresh: () -> Unit,
+    cacheUsage: PreviewCacheUsage?,
+    cacheLimitMb: Int,
+    onCacheLimitChange: (Int) -> Unit,
     onClear: () -> Unit,
     onOpenGithub: () -> Unit,
     onDismiss: () -> Unit,
@@ -79,6 +85,28 @@ internal fun SettingsPanel(
                     Text("Check camera")
                 }
                 HorizontalDivider()
+                Text("Preview cache", Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmall)
+                val usage = cacheUsage?.let { "${formatMegabytes(it.bytes)} · ${it.files} previews" } ?: "Size unavailable"
+                Text(usage, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                Text("Cache limit", style = MaterialTheme.typography.bodySmall)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    previewCacheLimitsMb.forEach { limit ->
+                        FilterChip(
+                            selected = cacheLimitMb == limit,
+                            onClick = { onCacheLimitChange(limit) },
+                            label = { Text(if (limit == 0) "Unlimited" else "$limit MB") },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            enabled = !busy,
+                        )
+                    }
+                }
+                Text(
+                    "Older previews are removed first when the cache exceeds its limit.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 TextButton(onClick = onClear, enabled = !busy) { Text("Clear preview cache") }
                 TextButton(onClick = onOpenGithub) { Text("GitHub · v$APP_VERSION") }
             }

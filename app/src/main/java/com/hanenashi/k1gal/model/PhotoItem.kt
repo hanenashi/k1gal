@@ -16,4 +16,10 @@ data class PhotoItem(
     val orientation: Int? = null,
     val loading: Boolean = false,
     val rawSizeBytes: Long? = null,
+    val storageSlot: String = "1",
+    val manualRotation: Int = 0,
+    val thumbExifOrientation: Int? = null,
+    val viewExifOrientation: Int? = null,
 )
+
+internal val PhotoItem.key: String get() = "$storageSlot/$dir/$jpg"

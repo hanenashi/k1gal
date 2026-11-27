@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,11 +23,14 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.unit.dp
 import com.hanenashi.k1gal.model.CameraStatus
+import com.hanenashi.k1gal.gallery.PreviewCacheUsage
 import com.hanenashi.k1gal.model.DownloadKind
 import com.hanenashi.k1gal.model.PhotoItem
+import com.hanenashi.k1gal.share.ShareQuality
 import com.hanenashi.k1gal.ui.components.ActionBar
 import com.hanenashi.k1gal.ui.components.DownloadChoiceDialog
 import com.hanenashi.k1gal.ui.components.FooterStatus
+import com.hanenashi.k1gal.ui.components.SelectionBar
 import com.hanenashi.k1gal.ui.components.SettingsPanel
 import com.hanenashi.k1gal.ui.gallery.GalleryGrid
 import com.hanenashi.k1gal.ui.live.LiveViewer
@@ -58,6 +62,9 @@ internal fun K1GalApp(
     onStop: () -> Unit,
     onUseCameraIp: () -> Unit,
     onClear: () -> Unit,
+    cacheUsage: PreviewCacheUsage?,
+    cacheLimitMb: Int,
+    onCacheLimitChange: (Int) -> Unit,
     onDownloadSelected: (DownloadKind) -> Unit,
     onOpen: (PhotoItem) -> Unit,
     onCloseViewer: () -> Unit,
@@ -67,16 +74,36 @@ internal fun K1GalApp(
     onCloseLiveView: () -> Unit,
     onShoot: () -> Unit,
     onToggleSelect: (PhotoItem) -> Unit,
+    selectingRange: Boolean,
+    rangeStart: PhotoItem?,
+    onBeginRange: () -> Unit,
+    onCancelRange: () -> Unit,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
+    onPreviewPhotosVisible: (List<PhotoItem>) -> Unit,
+    onRotatePreview: (Int?) -> Unit,
+    onSharePhoto: (ShareQuality) -> Unit,
     onOpenGithub: () -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
     var downloadChoiceOpen by remember { mutableStateOf(false) }
     val fullscreen = viewerIndex != null || liveViewVisible
-    BackHandler(enabled = fullscreen) {
+    val currentPhoto = viewerIndex?.let(photos::getOrNull)
+    val orientationProbeEnabled = !busy && !liveViewVisible && cameraStatus is CameraStatus.Connected
+    LaunchedEffect(currentPhoto, orientationProbeEnabled) {
+        if (currentPhoto != null) {
+            onPreviewPhotosVisible(if (orientationProbeEnabled) listOf(currentPhoto) else emptyList())
+        } else if (liveViewVisible) {
+            onPreviewPhotosVisible(emptyList())
+        }
+    }
+    BackHandler(enabled = fullscreen || selectingRange) {
         if (liveViewVisible) {
             if (!captureBusy) onCloseLiveView()
-        } else {
+        } else if (viewerIndex != null) {
             onCloseViewer()
+        } else {
+            onCancelRange()
         }
     }
 
@@ -92,7 +119,6 @@ internal fun K1GalApp(
                         selectedCount = selected.size,
                         busy = busy,
                         canPreviewAll = photos.isNotEmpty(),
-                        cameraStatus = cameraStatus,
                         onSettings = {
                             settingsOpen = true
                             onRefreshCameraStatus()
@@ -100,6 +126,7 @@ internal fun K1GalApp(
                         onScan = onScan,
                         onPreviewAll = onPreviewAll,
                         onStop = onStop,
+                        onClear = onClear,
                         onDownloadSelected = { downloadChoiceOpen = true },
                         onOpenLiveView = onOpenLiveView,
                     )
@@ -114,8 +141,30 @@ internal fun K1GalApp(
                                 Text("Tap Scan to browse the camera.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         } else {
-                            GalleryGrid(photos, selected, onOpen, onToggleSelect)
+                            GalleryGrid(
+                                photos = photos,
+                                selected = selected,
+                                selectingRange = selectingRange,
+                                rangeStart = rangeStart,
+                                probeEnabled = orientationProbeEnabled && !fullscreen,
+                                onVisible = onPreviewPhotosVisible,
+                                onOpen = onOpen,
+                                onToggleSelect = onToggleSelect,
+                            )
                         }
+                    }
+                    if (photos.isNotEmpty()) {
+                        SelectionBar(
+                            selectedCount = selected.size,
+                            total = photos.size,
+                            enabled = !busy || selectingRange,
+                            selectingRange = selectingRange,
+                            rangeStarted = rangeStart != null,
+                            onSelectAll = onSelectAll,
+                            onBeginRange = onBeginRange,
+                            onCancelRange = onCancelRange,
+                            onClearSelection = onClearSelection,
+                        )
                     }
                     FooterStatus(
                         status = status,
@@ -132,6 +181,9 @@ internal fun K1GalApp(
                         busy = busy,
                         onUseCameraIp = onUseCameraIp,
                         onRefresh = onRefreshCameraStatus,
+                        cacheUsage = cacheUsage,
+                        cacheLimitMb = cacheLimitMb,
+                        onCacheLimitChange = onCacheLimitChange,
                         onClear = {
                             onClear()
                             settingsOpen = false
@@ -152,6 +204,8 @@ internal fun K1GalApp(
                             onPrev = onViewerPrev,
                             onNext = onViewerNext,
                             loadingLabel = viewerLoadingLabel,
+                            onRotatePreview = onRotatePreview,
+                            onSharePhoto = onSharePhoto,
                         )
                     }
                 }
