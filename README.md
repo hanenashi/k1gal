@@ -6,8 +6,8 @@
 
 Android gallery for the Pentax K-1 Wi-Fi API.
 
-The latest published APK is [v0.4.0](https://github.com/hanenashi/k1gal/releases/tag/v0.4.0).
-Build from `main` for direct sharing, automatic and manual preview rotation,
+Download the latest APK from [GitHub Releases](https://github.com/hanenashi/k1gal/releases/latest).
+Version `0.5.0` adds direct sharing, automatic and manual preview rotation,
 range selection, cache limits, and the restored compact toolbar.
 
 ## Nerdy TL;DR

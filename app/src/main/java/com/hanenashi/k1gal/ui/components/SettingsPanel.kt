@@ -27,7 +27,7 @@ import com.hanenashi.k1gal.gallery.PreviewCacheUsage
 import com.hanenashi.k1gal.gallery.previewCacheLimitsMb
 import com.hanenashi.k1gal.util.formatMegabytes
 
-private const val APP_VERSION = "0.4.0"
+private const val APP_VERSION = "0.5.0"
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
