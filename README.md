@@ -4,7 +4,11 @@
 
 # k1gal
 
-Android gallery for the Pentax K-1 Wi-Fi API. Current app version is `0.4.0`.
+Android gallery for the Pentax K-1 Wi-Fi API.
+
+The latest published APK is [v0.4.0](https://github.com/hanenashi/k1gal/releases/tag/v0.4.0).
+Build from `main` for direct sharing, automatic and manual preview rotation,
+range selection, cache limits, and the restored compact toolbar.
 
 ## Nerdy TL;DR
 
@@ -23,11 +27,11 @@ deciding what is worth keeping.
 The app is designed for the "small JPEG previews on SD card" workflow:
 
 1. Connect the Pixel to the `PENTAX_...` Wi-Fi network.
-2. Scan the selected SD card.
-3. Scan lists the camera files without downloading every preview.
-4. Tap individual cards to fetch their JPEG previews, or use **All**.
-5. Select photos and use **Down** to save full JPEGs or matching RAW
-   files to `Download/k1gal`.
+2. Choose an SD slot in **Set**, then tap **Scan** to list files.
+3. Tap a photo to fetch its preview, or use **All** to cache thumbnails.
+4. Use the checkboxes or the **Select** menu to choose photos. **Select range**
+   includes the first and last photo you tap and every photo between them.
+5. Use **Down** to save full JPEGs or matching RAW files to `Download/k1gal`.
 
 RAW downloads use the RAW filename reported by the K-1. The fullscreen viewer
 supports interactive horizontal swipes, Previous and Next buttons, double-tap
@@ -37,9 +41,16 @@ fetches its preview. Preview orientation follows the camera. In fullscreen,
 resets it. The rotation applies to previews. **Set** opens connection options,
 camera status, and the app version.
 
-In fullscreen, use **Share** to send a quick preview or fetch a full JPEG
-through Android’s share sheet. The quick preview uses the displayed rotation
-and can be shared from cache without the camera connected.
+### Share a photo
+
+Open a photo fullscreen and tap **Share**. Choose the JPEG you want to send:
+
+- **Quick preview** uses the cached image, applies the displayed rotation, and
+  works without a camera connection.
+- **Full JPEG** fetches the original JPEG from the connected K-1, preserving
+  its original orientation and embedded metadata.
+
+Android’s share sheet opens so you can choose an app or recipient.
 
 ## Build
 
@@ -129,9 +140,8 @@ controls remain future work.
 
 ### 7. Read-only camera status — completed
 
-- The gallery summarizes the most recent camera check, battery, and remaining
-  shots on the active SD card. A scan refreshes that summary.
-- Camera settings shows model, firmware, both SD slots, and heat warnings.
+- **Set → Camera status** shows model, firmware, battery, both SD slots,
+  remaining shots, and heat warnings. A scan refreshes that status.
   Use **Check camera** to refresh it manually.
 - See [planning.md](planning.md) for the remaining gallery and reliability work.
 
